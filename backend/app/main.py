@@ -26,6 +26,7 @@ from app.schemas import (
 app = FastAPI(title="Seeya API")
 registry = ModelRegistry()
 LM_STUDIO_TIMEOUT_SECONDS = 45.0
+DEFAULT_VISION_PROMPT = "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。"
 
 app.add_middleware(
     CORSMiddleware,
@@ -156,11 +157,12 @@ def build_vision_prompt(payload: VisionAnalyzeRequest) -> str:
         for item in payload.detections[:10]
     ]
     detections_text = "\n".join(detection_lines) if detection_lines else "- none"
+    instruction = payload.prompt.strip() if payload.prompt and payload.prompt.strip() else DEFAULT_VISION_PROMPT
     return (
         f"事件：{event_text}。\n"
         f"帧编号：{payload.frameId}。\n"
         f"检测框参考：\n{detections_text}\n"
-        "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。"
+        f"{instruction}"
     )
 
 

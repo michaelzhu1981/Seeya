@@ -70,6 +70,7 @@ def test_vision_analyze_returns_chat_message(monkeypatch) -> None:
         json={
             "baseUrl": "http://127.0.0.1:1234/v1",
             "modelId": "qwen/qwen3-v1-4b",
+            "prompt": "只输出安全风险摘要。",
             "imageData": "data:image/jpeg;base64,abc",
             "eventType": "person_moved",
             "frameId": 12,
@@ -88,6 +89,9 @@ def test_vision_analyze_returns_chat_message(monkeypatch) -> None:
     assert response.json()["modelId"] == "qwen/qwen3-v1-4b"
     assert FakeAsyncClient.last_post_json is not None
     assert FakeAsyncClient.last_post_json["model"] == "qwen/qwen3-v1-4b"
+    prompt = FakeAsyncClient.last_post_json["messages"][1]["content"][0]["text"]
+    assert "画面中的人发生了移动" in prompt
+    assert "只输出安全风险摘要。" in prompt
 
 
 def test_vision_models_rejects_invalid_url() -> None:

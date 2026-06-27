@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Camera, CircleStop, Play, RefreshCw, Settings, Wifi, WifiOff } from "lucide-react";
+import { Activity, Camera, CircleStop, FileText, Play, RefreshCw, Settings, Wifi, WifiOff } from "lucide-react";
 import type { Detection, DetectResponse, ModelInfo, VisionAnalyzeResponse, VisionModelInfo, VisionModelsResponse } from "./types";
 import "./styles.css";
 
@@ -11,6 +11,7 @@ const LANGUAGE_STORAGE_KEY = "seeya.language";
 const APPEARANCE_STORAGE_KEY = "seeya.appearance";
 const LM_STUDIO_URL_STORAGE_KEY = "seeya.lmStudioUrl";
 const LM_STUDIO_MODEL_STORAGE_KEY = "seeya.lmStudioModelId";
+const LM_STUDIO_PROMPT_STORAGE_KEY = "seeya.lmStudioPrompt";
 const VISION_TRIGGER_SETTINGS_STORAGE_KEY = "seeya.visionTriggerSettings";
 const TARGET_FPS = 5;
 const CAMERA_OFF_ID = "camera-off";
@@ -18,6 +19,7 @@ const DEFAULT_CONFIDENCE_THRESHOLD = 0.55;
 const FRAME_JPEG_QUALITY = 0.88;
 const DEFAULT_LM_STUDIO_URL = "http://192.168.4.181:1234/v1";
 const DEFAULT_LM_STUDIO_MODEL = "qwen/qwen3-v1-4b";
+const DEFAULT_LM_STUDIO_PROMPT = "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。";
 const MAX_VISION_MESSAGES = 50;
 const BOX_SMOOTHING_ALPHA = 0.65;
 
@@ -125,6 +127,11 @@ const copy = {
     cameraPermissionNeeded: "Camera permission needed",
     lmStudioVision: "LM Studio vision",
     lmStudioUrl: "LM Studio URL",
+    editLmStudioPrompt: "Edit prompt",
+    promptDialogTitle: "LM Studio prompt",
+    promptDialogHelp: "This prompt is saved locally and sent with each LM Studio vision request.",
+    savePrompt: "Save",
+    cancelPrompt: "Cancel",
     checkModels: "Check models",
     checkingModels: "Checking",
     visionModel: "Vision model",
@@ -201,6 +208,11 @@ const copy = {
     cameraPermissionNeeded: "需要摄像头权限",
     lmStudioVision: "LM Studio 图像识别",
     lmStudioUrl: "LM Studio URL",
+    editLmStudioPrompt: "修改提示词",
+    promptDialogTitle: "LM Studio 提示词",
+    promptDialogHelp: "提示词会保存在本地，并随每次 LM Studio 图像识别请求发送。",
+    savePrompt: "保存",
+    cancelPrompt: "取消",
     checkModels: "检测模型",
     checkingModels: "检测中",
     visionModel: "图像模型",
@@ -291,6 +303,7 @@ function App() {
   const lastVisionRequestAtRef = React.useRef(-Number.POSITIVE_INFINITY);
   const triggerSettingsRef = React.useRef<VisionTriggerSettings>(DEFAULT_TRIGGER_SETTINGS);
   const lmStudioUrlRef = React.useRef(DEFAULT_LM_STUDIO_URL);
+  const lmStudioPromptRef = React.useRef(DEFAULT_LM_STUDIO_PROMPT);
   const selectedVisionModelIdRef = React.useRef("");
 
   const [models, setModels] = React.useState<ModelInfo[]>([]);
@@ -302,6 +315,11 @@ function App() {
   const [lmStudioUrl, setLmStudioUrl] = React.useState(
     () => window.localStorage.getItem(LM_STUDIO_URL_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_URL,
   );
+  const [lmStudioPrompt, setLmStudioPrompt] = React.useState(
+    () => window.localStorage.getItem(LM_STUDIO_PROMPT_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_PROMPT,
+  );
+  const [promptDraft, setPromptDraft] = React.useState("");
+  const [promptDialogOpen, setPromptDialogOpen] = React.useState(false);
   const [isCheckingVisionModels, setIsCheckingVisionModels] = React.useState(false);
   const [triggerSettings, setTriggerSettings] = React.useState<VisionTriggerSettings>(() => readStoredTriggerSettings());
   const [visionMessages, setVisionMessages] = React.useState<VisionMessage[]>([]);
@@ -369,6 +387,11 @@ function App() {
     window.localStorage.setItem(LM_STUDIO_URL_STORAGE_KEY, lmStudioUrl);
     lmStudioUrlRef.current = lmStudioUrl;
   }, [lmStudioUrl]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(LM_STUDIO_PROMPT_STORAGE_KEY, lmStudioPrompt);
+    lmStudioPromptRef.current = lmStudioPrompt;
+  }, [lmStudioPrompt]);
 
   React.useEffect(() => {
     window.localStorage.setItem(LM_STUDIO_MODEL_STORAGE_KEY, selectedVisionModelId);
@@ -453,6 +476,16 @@ function App() {
     }
   }, [lmStudioUrl]);
 
+  const openPromptDialog = React.useCallback(() => {
+    setPromptDraft(lmStudioPrompt);
+    setPromptDialogOpen(true);
+  }, [lmStudioPrompt]);
+
+  const savePromptDraft = React.useCallback(() => {
+    setLmStudioPrompt(promptDraft.trim() || DEFAULT_LM_STUDIO_PROMPT);
+    setPromptDialogOpen(false);
+  }, [promptDraft]);
+
   const updateTriggerSetting = React.useCallback(
     <K extends keyof VisionTriggerSettings>(key: K, value: VisionTriggerSettings[K]) => {
       setTriggerSettings((current) => ({ ...current, [key]: value }));
@@ -525,6 +558,7 @@ function App() {
           body: JSON.stringify({
             baseUrl: lmStudioUrlRef.current,
             modelId,
+            prompt: lmStudioPromptRef.current,
             imageData,
             eventType: visionEvent.eventType,
             frameId,
@@ -886,7 +920,13 @@ function App() {
             </div>
             <label className="stacked-control">
               <span>{t.lmStudioUrl}</span>
-              <input value={lmStudioUrl} onChange={(event) => setLmStudioUrl(event.target.value)} />
+              <div className="lm-studio-url-row">
+                <input value={lmStudioUrl} onChange={(event) => setLmStudioUrl(event.target.value)} />
+                <button className="secondary-button prompt-button" type="button" onClick={openPromptDialog}>
+                  <FileText size={16} />
+                  {t.editLmStudioPrompt}
+                </button>
+              </div>
             </label>
             <button className="secondary-button" onClick={handleCheckVisionModels} disabled={isCheckingVisionModels}>
               <RefreshCw size={16} />
@@ -1042,6 +1082,25 @@ function App() {
         </aside>
       </section>
       <canvas ref={captureRef} className="capture-canvas" />
+      {promptDialogOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setPromptDialogOpen(false)}>
+          <section className="prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="prompt-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="section-header">
+              <span id="prompt-dialog-title">{t.promptDialogTitle}</span>
+            </div>
+            <p className="muted">{t.promptDialogHelp}</p>
+            <textarea value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} autoFocus />
+            <div className="dialog-actions">
+              <button className="secondary-button" type="button" onClick={() => setPromptDialogOpen(false)}>
+                {t.cancelPrompt}
+              </button>
+              <button className="secondary-button primary-action" type="button" onClick={savePromptDraft}>
+                {t.savePrompt}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
@@ -1206,7 +1265,7 @@ function NumberControl({
 }) {
   const displayValue = precision > 0 ? value.toFixed(precision) : String(value);
   return (
-    <label className="number-control" data-tooltip={tooltip} title={tooltip}>
+    <label className="number-control" data-tooltip={tooltip}>
       <span>{label}</span>
       <strong>
         {displayValue}

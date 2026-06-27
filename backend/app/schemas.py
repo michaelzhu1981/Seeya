@@ -75,6 +75,7 @@ class VisionModelsResponse(BaseModel):
 class VisionAnalyzeRequest(BaseModel):
     baseUrl: str = Field(min_length=1)
     modelId: str = Field(min_length=1)
+    prompt: str | None = None
     imageData: str = Field(min_length=1)
     eventType: str = Field(pattern="^(new_person|person_moved)$")
     frameId: int

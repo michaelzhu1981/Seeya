@@ -473,6 +473,19 @@ video,
   gap: 7px;
 }
 
+.lm-studio-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.prompt-button {
+  min-width: 132px;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
 .secondary-button {
   min-height: 40px;
   display: inline-flex;
@@ -755,6 +768,44 @@ video,
   display: none;
 }
 
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(5, 10, 14, 0.68);
+}
+
+.prompt-dialog {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #31424f;
+  border-radius: 8px;
+  color: #f5f8fb;
+  background: #111c24;
+  box-shadow: 0 22px 70px rgba(0, 0, 0, 0.42);
+}
+
+.prompt-dialog textarea {
+  min-height: 180px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.primary-action {
+  color: #07141a;
+  border-color: #18f6a4;
+  background: #18f6a4;
+}
+
 .app-shell.theme-light {
   color: #15202a;
   background: #eef3f6;
@@ -777,10 +828,17 @@ video,
 .app-shell.theme-light .icon-button,
 .app-shell.theme-light .stop-button,
 .app-shell.theme-light .secondary-button,
-.app-shell.theme-light .settings-popover {
+.app-shell.theme-light .settings-popover,
+.app-shell.theme-light .prompt-dialog {
   color: #16242e;
   background: #ffffff;
   border-color: #c7d4de;
+}
+
+.app-shell.theme-light .primary-action {
+  color: #ffffff;
+  border-color: #0f9f6e;
+  background: #0f9f6e;
 }
 
 .app-shell.theme-light .field span,
@@ -991,5 +1049,13 @@ video,
 
   .trigger-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .lm-studio-url-row {
+    grid-template-columns: 1fr;
+  }
+
+  .prompt-button {
+    width: 100%;
   }
 }
