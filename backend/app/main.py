@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import time
+from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 from app.model_registry import ModelRegistry
 from app.schemas import (
@@ -12,10 +16,16 @@ from app.schemas import (
     HealthResponse,
     ModelsResponse,
     SelectModelRequest,
+    VisionAnalyzeRequest,
+    VisionAnalyzeResponse,
+    VisionModelInfo,
+    VisionModelsRequest,
+    VisionModelsResponse,
 )
 
 app = FastAPI(title="Seeya API")
 registry = ModelRegistry()
+LM_STUDIO_TIMEOUT_SECONDS = 45.0
 
 app.add_middleware(
     CORSMiddleware,
@@ -51,6 +61,126 @@ async def select_model(payload: SelectModelRequest) -> ModelsResponse:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ModelsResponse(models=registry.list_models(), selectedModelId=registry.selected_model_id)
+
+
+@app.post("/vision/models", response_model=VisionModelsResponse)
+async def vision_models(payload: VisionModelsRequest) -> VisionModelsResponse:
+    base_url = normalize_lm_studio_base_url(payload.baseUrl)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{base_url}/models")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to reach LM Studio: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"LM Studio returned {response.status_code}: {response.text}")
+
+    data = response.json()
+    raw_models = data.get("data")
+    if not isinstance(raw_models, list):
+        raise HTTPException(status_code=502, detail="LM Studio /models response did not include a data list")
+
+    models = [
+        VisionModelInfo(id=item["id"], object=item.get("object"))
+        for item in raw_models
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    ]
+    if not models:
+        raise HTTPException(status_code=502, detail="LM Studio did not return any usable models")
+    return VisionModelsResponse(models=models)
+
+
+@app.post("/vision/analyze", response_model=VisionAnalyzeResponse)
+async def vision_analyze(payload: VisionAnalyzeRequest) -> VisionAnalyzeResponse:
+    base_url = normalize_lm_studio_base_url(payload.baseUrl)
+    request_body = {
+        "model": payload.modelId,
+        "temperature": 0.2,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是本地视觉监控助手。只根据画面内容回答，语言简洁，避免臆测身份。",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": build_vision_prompt(payload),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": payload.imageData},
+                    },
+                ],
+            },
+        ],
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=LM_STUDIO_TIMEOUT_SECONDS) as client:
+            response = await client.post(f"{base_url}/chat/completions", json=request_body)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Unable to reach LM Studio: {exc}") from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"LM Studio returned {response.status_code}: {response.text}")
+
+    data = response.json()
+    message = extract_chat_message(data)
+    if not message:
+        raise HTTPException(status_code=502, detail="LM Studio response did not include message content")
+
+    return VisionAnalyzeResponse(
+        message=message,
+        createdAt=datetime.now(UTC).isoformat(),
+        modelId=payload.modelId,
+    )
+
+
+def normalize_lm_studio_base_url(raw_url: str) -> str:
+    base_url = raw_url.strip().rstrip("/")
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="LM Studio URL must start with http:// or https://")
+    return base_url
+
+
+def build_vision_prompt(payload: VisionAnalyzeRequest) -> str:
+    event_text = "新的人出现在画面中" if payload.eventType == "new_person" else "画面中的人发生了移动"
+    detection_lines = [
+        (
+            f"- {item.label} confidence={item.confidence:.2f} "
+            f"box=({item.box.x:.0f},{item.box.y:.0f},{item.box.width:.0f},{item.box.height:.0f})"
+        )
+        for item in payload.detections[:10]
+    ]
+    detections_text = "\n".join(detection_lines) if detection_lines else "- none"
+    return (
+        f"事件：{event_text}。\n"
+        f"帧编号：{payload.frameId}。\n"
+        f"检测框参考：\n{detections_text}\n"
+        "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。"
+    )
+
+
+def extract_chat_message(data: dict[str, Any]) -> str:
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [part.get("text", "") for part in content if isinstance(part, dict)]
+        return "\n".join(part for part in parts if part).strip()
+    return ""
 
 
 @app.websocket("/ws/detect")

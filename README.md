@@ -92,6 +92,8 @@ The backend exposes:
 - `GET /health`
 - `GET /models`
 - `POST /models/select`
+- `POST /vision/models`
+- `POST /vision/analyze`
 - `WS /ws/detect`
 
 With `backend/models/yolo-small.onnx` and `onnxruntime` present, the selected
@@ -129,6 +131,28 @@ local files are available:
 - ONNX Runtime CoreML EP: `onnxruntime` with `CoreMLExecutionProvider`
 
 Camera frames are sent to the backend for inference and are not saved to disk.
+
+## LM Studio Vision Events
+
+The frontend can send a camera screenshot to an OpenAI-compatible LM Studio
+vision model when a new `person` appears or a tracked `person` moves. The
+default LM Studio base URL is:
+
+```text
+http://192.168.4.181:1234/v1
+```
+
+In the right panel, edit the LM Studio URL and click the model check button to
+load available models from `{baseUrl}/models`. The selected model is then used
+for `{baseUrl}/chat/completions`; the default preferred model is
+`qwen/qwen3-v1-4b`.
+
+The event trigger settings are adjustable in the UI and saved in
+`localStorage`: global cooldown, stable frames for a new person, track miss
+tolerance, track IoU, movement distance, and movement IoU. Cooldown is global,
+so one screenshot request suppresses all further screenshot requests until the
+cooldown expires. Screenshots are sent only to the configured LM Studio URL and
+are not written to disk.
 
 ## Verification
 

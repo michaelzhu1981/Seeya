@@ -57,3 +57,31 @@ class DetectFrameResponse(BaseModel):
     modelId: str
     inferenceMs: float
     detections: list[Detection]
+
+
+class VisionModelsRequest(BaseModel):
+    baseUrl: str = Field(min_length=1)
+
+
+class VisionModelInfo(BaseModel):
+    id: str
+    object: str | None = None
+
+
+class VisionModelsResponse(BaseModel):
+    models: list[VisionModelInfo]
+
+
+class VisionAnalyzeRequest(BaseModel):
+    baseUrl: str = Field(min_length=1)
+    modelId: str = Field(min_length=1)
+    imageData: str = Field(min_length=1)
+    eventType: str = Field(pattern="^(new_person|person_moved)$")
+    frameId: int
+    detections: list[Detection] = Field(default_factory=list)
+
+
+class VisionAnalyzeResponse(BaseModel):
+    message: str
+    createdAt: str
+    modelId: str

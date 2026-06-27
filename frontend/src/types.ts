@@ -26,3 +26,18 @@ export type DetectResponse = {
   inferenceMs: number;
   detections: Detection[];
 };
+
+export type VisionModelInfo = {
+  id: string;
+  object: string | null;
+};
+
+export type VisionModelsResponse = {
+  models: VisionModelInfo[];
+};
+
+export type VisionAnalyzeResponse = {
+  message: string;
+  createdAt: string;
+  modelId: string;
+};

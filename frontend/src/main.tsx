@@ -1,7 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Camera, CircleStop, Play, Settings, Wifi, WifiOff } from "lucide-react";
-import type { Detection, DetectResponse, ModelInfo } from "./types";
+import { Activity, Camera, CircleStop, Play, RefreshCw, Settings, Wifi, WifiOff } from "lucide-react";
+import type { Detection, DetectResponse, ModelInfo, VisionAnalyzeResponse, VisionModelInfo, VisionModelsResponse } from "./types";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8010";
@@ -9,25 +9,68 @@ const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
 const MODEL_STORAGE_KEY = "seeya.selectedModelId";
 const LANGUAGE_STORAGE_KEY = "seeya.language";
 const APPEARANCE_STORAGE_KEY = "seeya.appearance";
+const LM_STUDIO_URL_STORAGE_KEY = "seeya.lmStudioUrl";
+const LM_STUDIO_MODEL_STORAGE_KEY = "seeya.lmStudioModelId";
+const VISION_TRIGGER_SETTINGS_STORAGE_KEY = "seeya.visionTriggerSettings";
 const TARGET_FPS = 5;
 const CAMERA_OFF_ID = "camera-off";
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.55;
 const FRAME_JPEG_QUALITY = 0.88;
-const STABLE_CONFIRM_FRAMES = 2;
-const STABLE_MISS_TOLERANCE = 2;
-const STABLE_IOU_THRESHOLD = 0.35;
+const DEFAULT_LM_STUDIO_URL = "http://192.168.4.181:1234/v1";
+const DEFAULT_LM_STUDIO_MODEL = "qwen/qwen3-v1-4b";
+const MAX_VISION_MESSAGES = 50;
 const BOX_SMOOTHING_ALPHA = 0.65;
 
 type Language = "en" | "zh";
 type Appearance = "system" | "dark" | "light";
+type VisionEventType = "new_person" | "person_moved";
+type VisionMessageStatus = "pending" | "success" | "error";
+type VisionTriggerSettings = {
+  cooldownSeconds: number;
+  stableConfirmFrames: number;
+  missToleranceFrames: number;
+  trackIouThreshold: number;
+  movementDistancePercent: number;
+  movementIouThreshold: number;
+};
+type VisionMessage = {
+  id: string;
+  eventType: VisionEventType;
+  status: VisionMessageStatus;
+  timestamp: string;
+  summary: string;
+  message: string;
+  frameId: number;
+  modelId: string;
+};
 type TrackedDetection = Detection & {
   trackId: number;
   hits: number;
   lastSeenFrame: number;
+  newPersonReported: boolean;
+  eventAnchorBox: Detection["box"];
 };
 type DetectionTracker = {
   nextTrackId: number;
   tracks: TrackedDetection[];
+};
+type TrackedFrameResult = {
+  detections: Detection[];
+  events: VisionEvent[];
+};
+type VisionEvent = {
+  eventType: VisionEventType;
+  trackId: number;
+  detection: Detection;
+};
+
+const DEFAULT_TRIGGER_SETTINGS: VisionTriggerSettings = {
+  cooldownSeconds: 8,
+  stableConfirmFrames: 2,
+  missToleranceFrames: 2,
+  trackIouThreshold: 0.35,
+  movementDistancePercent: 8,
+  movementIouThreshold: 0.55,
 };
 
 const copy = {
@@ -80,6 +123,26 @@ const copy = {
     cameraActive: "Camera active",
     cameraApiUnavailable: "Camera API unavailable",
     cameraPermissionNeeded: "Camera permission needed",
+    lmStudioVision: "LM Studio vision",
+    lmStudioUrl: "LM Studio URL",
+    checkModels: "Check models",
+    checkingModels: "Checking",
+    visionModel: "Vision model",
+    noVisionModels: "No vision models loaded",
+    globalCooldown: "Global cooldown",
+    stableFrames: "Stable frames",
+    missTolerance: "Miss tolerance",
+    trackIou: "Track IoU",
+    moveDistance: "Move distance",
+    moveIou: "Move IoU",
+    visionMessages: "Vision messages",
+    noVisionMessages: "No vision messages yet.",
+    messageDetail: "Message detail",
+    pending: "Pending",
+    success: "Success",
+    newPerson: "New person",
+    personMoved: "Person moved",
+    selectVisionModel: "Select an LM Studio model first",
   },
   zh: {
     camera: "摄像头",
@@ -130,6 +193,26 @@ const copy = {
     cameraActive: "摄像头已开启",
     cameraApiUnavailable: "摄像头 API 不可用",
     cameraPermissionNeeded: "需要摄像头权限",
+    lmStudioVision: "LM Studio 图像识别",
+    lmStudioUrl: "LM Studio URL",
+    checkModels: "检测模型",
+    checkingModels: "检测中",
+    visionModel: "图像模型",
+    noVisionModels: "未加载图像模型",
+    globalCooldown: "全局冷却",
+    stableFrames: "新人稳定帧",
+    missTolerance: "丢失容忍帧",
+    trackIou: "Track IoU",
+    moveDistance: "移动距离",
+    moveIou: "移动 IoU",
+    visionMessages: "图像识别消息",
+    noVisionMessages: "暂无图像识别消息。",
+    messageDetail: "消息详情",
+    pending: "请求中",
+    success: "成功",
+    newPerson: "新的人",
+    personMoved: "人移动",
+    selectVisionModel: "请先选择 LM Studio 模型",
   },
 } satisfies Record<Language, Record<string, string>>;
 
@@ -140,6 +223,38 @@ function readStoredLanguage(): Language {
 function readStoredAppearance(): Appearance {
   const value = window.localStorage.getItem(APPEARANCE_STORAGE_KEY);
   return value === "dark" || value === "light" || value === "system" ? value : "system";
+}
+
+function readStoredTriggerSettings(): VisionTriggerSettings {
+  const stored = window.localStorage.getItem(VISION_TRIGGER_SETTINGS_STORAGE_KEY);
+  if (!stored) {
+    return DEFAULT_TRIGGER_SETTINGS;
+  }
+  try {
+    const value = JSON.parse(stored) as Partial<VisionTriggerSettings>;
+    return {
+      cooldownSeconds: clampNumber(value.cooldownSeconds, 1, 60, DEFAULT_TRIGGER_SETTINGS.cooldownSeconds),
+      stableConfirmFrames: Math.round(clampNumber(value.stableConfirmFrames, 1, 10, DEFAULT_TRIGGER_SETTINGS.stableConfirmFrames)),
+      missToleranceFrames: Math.round(clampNumber(value.missToleranceFrames, 0, 10, DEFAULT_TRIGGER_SETTINGS.missToleranceFrames)),
+      trackIouThreshold: clampNumber(value.trackIouThreshold, 0.1, 0.9, DEFAULT_TRIGGER_SETTINGS.trackIouThreshold),
+      movementDistancePercent: clampNumber(
+        value.movementDistancePercent,
+        1,
+        50,
+        DEFAULT_TRIGGER_SETTINGS.movementDistancePercent,
+      ),
+      movementIouThreshold: clampNumber(value.movementIouThreshold, 0.1, 0.95, DEFAULT_TRIGGER_SETTINGS.movementIouThreshold),
+    };
+  } catch {
+    return DEFAULT_TRIGGER_SETTINGS;
+  }
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function normalizeStatus(status: string): string {
@@ -161,9 +276,24 @@ function App() {
   const latestFrameRef = React.useRef(0);
   const sentAtRef = React.useRef(new Map<number, number>());
   const detectionTrackerRef = React.useRef<DetectionTracker>({ nextTrackId: 1, tracks: [] });
+  const lastVisionRequestAtRef = React.useRef(-Number.POSITIVE_INFINITY);
+  const triggerSettingsRef = React.useRef<VisionTriggerSettings>(DEFAULT_TRIGGER_SETTINGS);
+  const lmStudioUrlRef = React.useRef(DEFAULT_LM_STUDIO_URL);
+  const selectedVisionModelIdRef = React.useRef("");
 
   const [models, setModels] = React.useState<ModelInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState("");
+  const [visionModels, setVisionModels] = React.useState<VisionModelInfo[]>([]);
+  const [selectedVisionModelId, setSelectedVisionModelId] = React.useState(
+    () => window.localStorage.getItem(LM_STUDIO_MODEL_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_MODEL,
+  );
+  const [lmStudioUrl, setLmStudioUrl] = React.useState(
+    () => window.localStorage.getItem(LM_STUDIO_URL_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_URL,
+  );
+  const [isCheckingVisionModels, setIsCheckingVisionModels] = React.useState(false);
+  const [triggerSettings, setTriggerSettings] = React.useState<VisionTriggerSettings>(() => readStoredTriggerSettings());
+  const [visionMessages, setVisionMessages] = React.useState<VisionMessage[]>([]);
+  const [selectedVisionMessageId, setSelectedVisionMessageId] = React.useState("");
   const [cameras, setCameras] = React.useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = React.useState("");
   const [cameraState, setCameraState] = React.useState("Camera idle");
@@ -189,6 +319,10 @@ function App() {
   const selectedModel = React.useMemo(
     () => models.find((model) => model.id === selectedModelId),
     [models, selectedModelId],
+  );
+  const selectedVisionMessage = React.useMemo(
+    () => visionMessages.find((message) => message.id === selectedVisionMessageId) ?? visionMessages[0],
+    [selectedVisionMessageId, visionMessages],
   );
 
   const displayModelStatus = React.useMemo(() => {
@@ -218,6 +352,21 @@ function App() {
   React.useEffect(() => {
     window.localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance);
   }, [appearance]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(LM_STUDIO_URL_STORAGE_KEY, lmStudioUrl);
+    lmStudioUrlRef.current = lmStudioUrl;
+  }, [lmStudioUrl]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(LM_STUDIO_MODEL_STORAGE_KEY, selectedVisionModelId);
+    selectedVisionModelIdRef.current = selectedVisionModelId;
+  }, [selectedVisionModelId]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(VISION_TRIGGER_SETTINGS_STORAGE_KEY, JSON.stringify(triggerSettings));
+    triggerSettingsRef.current = triggerSettings;
+  }, [triggerSettings]);
 
   React.useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -251,6 +400,147 @@ function App() {
       return videoDevices[0]?.deviceId || CAMERA_OFF_ID;
     });
   }, []);
+
+  const appendVisionMessage = React.useCallback((message: VisionMessage) => {
+    setVisionMessages((current) => {
+      const nextMessages = [message, ...current].slice(0, MAX_VISION_MESSAGES);
+      setSelectedVisionMessageId(message.id);
+      return nextMessages;
+    });
+  }, []);
+
+  const updateVisionMessage = React.useCallback((messageId: string, updates: Partial<VisionMessage>) => {
+    setVisionMessages((current) =>
+      current.map((message) => (message.id === messageId ? { ...message, ...updates } : message)),
+    );
+  }, []);
+
+  const handleCheckVisionModels = React.useCallback(async () => {
+    setIsCheckingVisionModels(true);
+    setError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/vision/models`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl: lmStudioUrl }),
+      });
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+      const data = (await response.json()) as VisionModelsResponse;
+      setVisionModels(data.models);
+      setSelectedVisionModelId((current) => {
+        const preferred = data.models.find((model) => model.id === DEFAULT_LM_STUDIO_MODEL);
+        const currentAvailable = data.models.find((model) => model.id === current);
+        return currentAvailable?.id ?? preferred?.id ?? data.models[0]?.id ?? "";
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load LM Studio models");
+    } finally {
+      setIsCheckingVisionModels(false);
+    }
+  }, [lmStudioUrl]);
+
+  const updateTriggerSetting = React.useCallback(
+    <K extends keyof VisionTriggerSettings>(key: K, value: VisionTriggerSettings[K]) => {
+      setTriggerSettings((current) => ({ ...current, [key]: value }));
+    },
+    [],
+  );
+
+  const captureCurrentFrameImage = React.useCallback((): string => {
+    const video = videoRef.current;
+    const canvas = captureRef.current;
+    if (!video || !canvas || video.videoWidth === 0 || video.videoHeight === 0) {
+      return "";
+    }
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      return "";
+    }
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", FRAME_JPEG_QUALITY);
+  }, []);
+
+  const sendVisionEvent = React.useCallback(
+    async (visionEvent: VisionEvent, frameId: number, frameDetections: Detection[]) => {
+      const now = performance.now();
+      const cooldownMs = triggerSettingsRef.current.cooldownSeconds * 1000;
+      if (now - lastVisionRequestAtRef.current < cooldownMs) {
+        return;
+      }
+      const modelId = selectedVisionModelIdRef.current.trim();
+      if (!modelId) {
+        const timestamp = new Date().toISOString();
+        appendVisionMessage({
+          id: `${frameId}-${now}`,
+          eventType: visionEvent.eventType,
+          status: "error",
+          timestamp,
+          summary: t.selectVisionModel,
+          message: t.selectVisionModel,
+          frameId,
+          modelId: "",
+        });
+        lastVisionRequestAtRef.current = now;
+        return;
+      }
+      const imageData = captureCurrentFrameImage();
+      if (!imageData) {
+        return;
+      }
+
+      lastVisionRequestAtRef.current = now;
+      const timestamp = new Date().toISOString();
+      const id = `${frameId}-${now}`;
+      appendVisionMessage({
+        id,
+        eventType: visionEvent.eventType,
+        status: "pending",
+        timestamp,
+        summary: t.pending,
+        message: t.pending,
+        frameId,
+        modelId,
+      });
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/vision/analyze`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseUrl: lmStudioUrlRef.current,
+            modelId,
+            imageData,
+            eventType: visionEvent.eventType,
+            frameId,
+            detections: frameDetections,
+          }),
+        });
+        if (!response.ok) {
+          throw new Error(await readApiError(response));
+        }
+        const data = (await response.json()) as VisionAnalyzeResponse;
+        updateVisionMessage(id, {
+          status: "success",
+          timestamp: data.createdAt,
+          summary: summarizeVisionMessage(data.message),
+          message: data.message,
+          modelId: data.modelId,
+        });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : "LM Studio vision request failed";
+        updateVisionMessage(id, {
+          status: "error",
+          summary: errorMessage,
+          message: errorMessage,
+        });
+      }
+    },
+    [appendVisionMessage, captureCurrentFrameImage, t.pending, t.selectVisionModel, updateVisionMessage],
+  );
 
   React.useEffect(() => {
     loadModels().catch((err: unknown) => {
@@ -376,9 +666,19 @@ function App() {
         sentAtRef.current.delete(data.frameId);
       }
       setInferenceMs(data.inferenceMs);
-      setDetections(stabilizeDetections(data.detections, data.frameId, detectionTrackerRef.current));
+      const tracked = trackDetections(
+        data.detections,
+        data.frameId,
+        detectionTrackerRef.current,
+        triggerSettingsRef.current,
+        { width: videoRef.current?.videoWidth ?? 0, height: videoRef.current?.videoHeight ?? 0 },
+      );
+      setDetections(tracked.detections);
+      if (tracked.events.length > 0) {
+        void sendVisionEvent(tracked.events[0], data.frameId, tracked.detections);
+      }
     };
-  }, [selectedModel, startCamera, t.selectModelError, t.unableStartCamera, t.websocketFailed]);
+  }, [selectedModel, sendVisionEvent, startCamera, t.selectModelError, t.unableStartCamera, t.websocketFailed]);
 
   React.useEffect(() => {
     if (!isRunning) {
@@ -568,6 +868,85 @@ function App() {
             />
           </label>
 
+          <div className="vision-settings">
+            <div className="section-header">
+              <span>{t.lmStudioVision}</span>
+            </div>
+            <label className="stacked-control">
+              <span>{t.lmStudioUrl}</span>
+              <input value={lmStudioUrl} onChange={(event) => setLmStudioUrl(event.target.value)} />
+            </label>
+            <button className="secondary-button" onClick={handleCheckVisionModels} disabled={isCheckingVisionModels}>
+              <RefreshCw size={16} />
+              {isCheckingVisionModels ? t.checkingModels : t.checkModels}
+            </button>
+            <label className="stacked-control">
+              <span>{t.visionModel}</span>
+              <select value={selectedVisionModelId} onChange={(event) => setSelectedVisionModelId(event.target.value)}>
+                {visionModels.length === 0 ? <option value={selectedVisionModelId}>{selectedVisionModelId || t.noVisionModels}</option> : null}
+                {visionModels.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="trigger-grid">
+              <NumberControl
+                label={t.globalCooldown}
+                suffix="s"
+                value={triggerSettings.cooldownSeconds}
+                min={1}
+                max={60}
+                step={1}
+                onChange={(value) => updateTriggerSetting("cooldownSeconds", value)}
+              />
+              <NumberControl
+                label={t.stableFrames}
+                value={triggerSettings.stableConfirmFrames}
+                min={1}
+                max={10}
+                step={1}
+                onChange={(value) => updateTriggerSetting("stableConfirmFrames", Math.round(value))}
+              />
+              <NumberControl
+                label={t.missTolerance}
+                value={triggerSettings.missToleranceFrames}
+                min={0}
+                max={10}
+                step={1}
+                onChange={(value) => updateTriggerSetting("missToleranceFrames", Math.round(value))}
+              />
+              <NumberControl
+                label={t.trackIou}
+                value={triggerSettings.trackIouThreshold}
+                min={0.1}
+                max={0.9}
+                step={0.05}
+                precision={2}
+                onChange={(value) => updateTriggerSetting("trackIouThreshold", value)}
+              />
+              <NumberControl
+                label={t.moveDistance}
+                suffix="%"
+                value={triggerSettings.movementDistancePercent}
+                min={1}
+                max={50}
+                step={1}
+                onChange={(value) => updateTriggerSetting("movementDistancePercent", value)}
+              />
+              <NumberControl
+                label={t.moveIou}
+                value={triggerSettings.movementIouThreshold}
+                min={0.1}
+                max={0.95}
+                step={0.05}
+                precision={2}
+                onChange={(value) => updateTriggerSetting("movementIouThreshold", value)}
+              />
+            </div>
+          </div>
+
           <div className="status-grid">
             <Metric label="FPS" value={fps.toFixed(1)} />
             <Metric label={t.inference} value={`${inferenceMs.toFixed(1)} ms`} />
@@ -605,6 +984,43 @@ function App() {
               </div>
             )}
           </div>
+
+          <div className="vision-messages">
+            <div className="section-header">
+              <span>{t.visionMessages}</span>
+              <strong>{visionMessages.length}</strong>
+            </div>
+            {visionMessages.length === 0 ? (
+              <p className="muted">{t.noVisionMessages}</p>
+            ) : (
+              <div className="vision-message-list">
+                {visionMessages.map((message) => (
+                  <button
+                    className={`vision-message-item ${message.status} ${selectedVisionMessage?.id === message.id ? "selected" : ""}`}
+                    key={message.id}
+                    onClick={() => setSelectedVisionMessageId(message.id)}
+                  >
+                    <span>{formatTimestamp(message.timestamp)}</span>
+                    <strong>{message.eventType === "new_person" ? t.newPerson : t.personMoved}</strong>
+                    <em>{message.summary}</em>
+                  </button>
+                ))}
+              </div>
+            )}
+            <label className="message-detail">
+              <span>{t.messageDetail}</span>
+              <textarea
+                readOnly
+                value={
+                  selectedVisionMessage
+                    ? `[${formatTimestamp(selectedVisionMessage.timestamp)}] ${
+                        selectedVisionMessage.eventType === "new_person" ? t.newPerson : t.personMoved
+                      }\n${selectedVisionMessage.message}`
+                    : ""
+                }
+              />
+            </label>
+          </div>
         </aside>
       </section>
       <canvas ref={captureRef} className="capture-canvas" />
@@ -612,13 +1028,17 @@ function App() {
   );
 }
 
-function stabilizeDetections(
+function trackDetections(
   incomingDetections: Detection[],
   frameId: number,
   tracker: DetectionTracker,
-): Detection[] {
+  settings: VisionTriggerSettings,
+  frameSize: { width: number; height: number },
+): TrackedFrameResult {
   const matchedTrackIds = new Set<number>();
   const sortedDetections = [...incomingDetections].sort((left, right) => right.confidence - left.confidence);
+  const events: VisionEvent[] = [];
+  const frameDiagonal = Math.hypot(frameSize.width, frameSize.height) || 1;
 
   sortedDetections.forEach((detection) => {
     let bestTrackIndex = -1;
@@ -635,13 +1055,15 @@ function stabilizeDetections(
       }
     });
 
-    if (bestTrackIndex >= 0 && bestIou >= STABLE_IOU_THRESHOLD) {
+    if (bestTrackIndex >= 0 && bestIou >= settings.trackIouThreshold) {
       const bestTrack = tracker.tracks[bestTrackIndex];
+      const previousAnchor = bestTrack.eventAnchorBox;
       bestTrack.confidence = detection.confidence;
       bestTrack.box = smoothBox(bestTrack.box, detection.box);
       bestTrack.hits += 1;
       bestTrack.lastSeenFrame = frameId;
       matchedTrackIds.add(bestTrack.trackId);
+      collectPersonEvents(bestTrack, previousAnchor, settings, frameDiagonal, events);
       return;
     }
 
@@ -650,17 +1072,58 @@ function stabilizeDetections(
       trackId: tracker.nextTrackId,
       hits: 1,
       lastSeenFrame: frameId,
+      newPersonReported: false,
+      eventAnchorBox: detection.box,
     };
     tracker.nextTrackId += 1;
     tracker.tracks.push(track);
     matchedTrackIds.add(track.trackId);
+    collectPersonEvents(track, track.eventAnchorBox, settings, frameDiagonal, events);
   });
 
-  tracker.tracks = tracker.tracks.filter((track) => frameId - track.lastSeenFrame <= STABLE_MISS_TOLERANCE);
-  return tracker.tracks
-    .filter((track) => track.hits >= STABLE_CONFIRM_FRAMES || track.confidence >= 0.75)
+  tracker.tracks = tracker.tracks.filter((track) => frameId - track.lastSeenFrame <= settings.missToleranceFrames);
+  const detections = tracker.tracks
+    .filter((track) => isStableTrack(track, settings))
     .sort((left, right) => right.confidence - left.confidence)
-    .map(({ trackId: _trackId, hits: _hits, lastSeenFrame: _lastSeenFrame, ...detection }) => detection);
+    .map(stripTrackFields);
+  return { detections, events };
+}
+
+function collectPersonEvents(
+  track: TrackedDetection,
+  previousAnchor: Detection["box"],
+  settings: VisionTriggerSettings,
+  frameDiagonal: number,
+  events: VisionEvent[],
+) {
+  if (track.label !== "person" || !isStableTrack(track, settings)) {
+    return;
+  }
+  if (!track.newPersonReported) {
+    track.newPersonReported = true;
+    track.eventAnchorBox = track.box;
+    events.push({ eventType: "new_person", trackId: track.trackId, detection: stripTrackFields(track) });
+    return;
+  }
+
+  const movementDistance = centerDistance(previousAnchor, track.box) / frameDiagonal;
+  const movementIou = boxIou(previousAnchor, track.box);
+  if (movementDistance >= settings.movementDistancePercent / 100 || movementIou < settings.movementIouThreshold) {
+    track.eventAnchorBox = track.box;
+    events.push({ eventType: "person_moved", trackId: track.trackId, detection: stripTrackFields(track) });
+  }
+}
+
+function isStableTrack(track: TrackedDetection, settings: VisionTriggerSettings): boolean {
+  return track.hits >= settings.stableConfirmFrames || track.confidence >= 0.75;
+}
+
+function stripTrackFields(track: TrackedDetection): Detection {
+  return {
+    label: track.label,
+    confidence: track.confidence,
+    box: track.box,
+  };
 }
 
 function smoothBox(previous: Detection["box"], next: Detection["box"]): Detection["box"] {
@@ -685,6 +1148,14 @@ function boxIou(left: Detection["box"], right: Detection["box"]): number {
   return union > 0 ? intersection / union : 0;
 }
 
+function centerDistance(left: Detection["box"], right: Detection["box"]): number {
+  const leftCenterX = left.x + left.width / 2;
+  const leftCenterY = left.y + left.height / 2;
+  const rightCenterX = right.x + right.width / 2;
+  const rightCenterY = right.y + right.height / 2;
+  return Math.hypot(leftCenterX - rightCenterX, leftCenterY - rightCenterY);
+}
+
 function Metric({ label, value }: { label: string; value: string }) {
   return (
     <div className="metric">
@@ -692,6 +1163,70 @@ function Metric({ label, value }: { label: string; value: string }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function NumberControl({
+  label,
+  suffix,
+  value,
+  min,
+  max,
+  step,
+  precision = 0,
+  onChange,
+}: {
+  label: string;
+  suffix?: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  precision?: number;
+  onChange: (value: number) => void;
+}) {
+  const displayValue = precision > 0 ? value.toFixed(precision) : String(value);
+  return (
+    <label className="number-control">
+      <span>{label}</span>
+      <strong>
+        {displayValue}
+        {suffix ?? ""}
+      </strong>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+    </label>
+  );
+}
+
+async function readApiError(response: Response): Promise<string> {
+  try {
+    const data = (await response.json()) as { detail?: unknown };
+    if (typeof data.detail === "string") {
+      return data.detail;
+    }
+  } catch {
+    return response.statusText;
+  }
+  return response.statusText;
+}
+
+function summarizeVisionMessage(message: string): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  return normalized.length > 56 ? `${normalized.slice(0, 56)}...` : normalized;
+}
+
+function formatTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return timestamp;
+  }
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function drawOverlay(video: HTMLVideoElement | null, canvas: HTMLCanvasElement | null, detections: Detection[]) {
