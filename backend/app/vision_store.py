@@ -17,7 +17,7 @@ from PIL import Image, ImageOps
 from app.schemas import Box, Detection
 
 
-RETENTION_HOURS = int(os.environ.get("SEEYA_VISION_RETENTION_HOURS", "48"))
+DEFAULT_RETENTION_DAYS = int(os.environ.get("SEEYA_VISION_RETENTION_DAYS", "1"))
 MAX_IMAGE_SIDE = 960
 IMAGE_HASH_SIMILAR_DISTANCE = 6
 TEXT_SIMILARITY_THRESHOLD = 0.85
@@ -134,9 +134,11 @@ class VisionEventStore:
         image_data: str,
         model_id: str,
         frame_id: int,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
         now: datetime | None = None,
     ) -> VisionPersistenceResult:
         current = now or datetime.now(UTC)
+        expires_at = current + timedelta(days=retention_days)
         self.cleanup_expired(current)
         screenshot = prepare_screenshot(image_data)
         primary_box = select_primary_box(detections)
@@ -170,10 +172,10 @@ class VisionEventStore:
                 connection.execute(
                     """
                     UPDATE vision_events
-                    SET duplicate_count = ?, last_seen_at = ?
+                    SET duplicate_count = ?, last_seen_at = ?, expires_at = ?
                     WHERE id = ?
                     """,
-                    (duplicate_count, current.isoformat(), matching["id"]),
+                    (duplicate_count, current.isoformat(), expires_at.isoformat(), matching["id"]),
                 )
                 return VisionPersistenceResult(
                     event_id=matching["id"],
@@ -210,7 +212,7 @@ class VisionEventStore:
                     current.isoformat(),
                     current.isoformat(),
                     current.isoformat(),
-                    (current + timedelta(hours=RETENTION_HOURS)).isoformat(),
+                    expires_at.isoformat(),
                     str(screenshot_path.relative_to(self.data_dir)),
                     screenshot.mime_type,
                     len(screenshot.content),

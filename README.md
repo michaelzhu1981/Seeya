@@ -147,12 +147,15 @@ load available models from `{baseUrl}/models`. The selected model is then used
 for `{baseUrl}/chat/completions`; the default preferred model is
 `qwen/qwen3-v1-4b`.
 
-The event trigger settings are adjustable in the UI and saved in
-`localStorage`: global cooldown, stable frames for a new person, track miss
-tolerance, track IoU, movement distance, and movement IoU. Cooldown is global,
-so one screenshot request suppresses all further screenshot requests until the
-cooldown expires. Screenshots are sent only to the configured LM Studio URL and
-are not written to disk.
+Frontend parameter settings are saved in the backend SQLite database through the
+`/settings` API. This includes selected model and camera IDs, language,
+appearance, confidence threshold, LM Studio URL/model/prompt, event trigger
+settings, and history data retention. Cooldown is global, so one screenshot
+request suppresses all further screenshot requests until the cooldown expires.
+The default history retention is 1 day; each saved event uses that value to
+expire database records and saved screenshots. Screenshots are sent only to the
+configured LM Studio URL and saved locally only for vision-event history until
+they expire.
 
 ## Verification
 

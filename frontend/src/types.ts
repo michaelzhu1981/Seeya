@@ -27,6 +27,28 @@ export type DetectResponse = {
   detections: Detection[];
 };
 
+export type VisionTriggerSettings = {
+  cooldownSeconds: number;
+  stableConfirmFrames: number;
+  missToleranceFrames: number;
+  trackIouThreshold: number;
+  movementDistancePercent: number;
+  movementIouThreshold: number;
+};
+
+export type AppSettings = {
+  selectedModelId: string | null;
+  selectedCameraId: string | null;
+  language: "en" | "zh";
+  appearance: "system" | "dark" | "light";
+  lmStudioUrl: string;
+  lmStudioModelId: string;
+  lmStudioPrompt: string;
+  visionTriggerSettings: VisionTriggerSettings;
+  historyRetentionDays: number;
+  confidenceThreshold: number;
+};
+
 export type VisionModelInfo = {
   id: string;
   object: string | null;

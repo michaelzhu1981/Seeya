@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 import io
 
 import httpx
@@ -8,6 +9,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import main
+from app.settings_store import AppSettingsStore
 from app.vision_store import VisionEventStore
 
 
@@ -64,6 +66,46 @@ def test_vision_models_lists_lm_studio_models(monkeypatch) -> None:
             {"id": "other-model", "object": None},
         ]
     }
+
+
+def test_app_settings_persist_to_database(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main, "settings_store", AppSettingsStore(tmp_path))
+    client = TestClient(main.app)
+
+    initial = client.get("/settings")
+    assert initial.status_code == 200
+    assert initial.json()["historyRetentionDays"] == 1
+
+    payload = initial.json()
+    payload.update(
+        {
+            "selectedModelId": "yolo11x-onnx",
+            "selectedCameraId": "camera-1",
+            "language": "zh",
+            "appearance": "dark",
+            "lmStudioUrl": "http://127.0.0.1:1234/v1",
+            "lmStudioModelId": "vision-model",
+            "lmStudioPrompt": "测试提示词",
+            "historyRetentionDays": 7,
+            "confidenceThreshold": 0.72,
+        }
+    )
+    payload["visionTriggerSettings"]["cooldownSeconds"] = 12
+
+    saved = client.put("/settings", json=payload)
+    loaded = client.get("/settings")
+
+    assert saved.status_code == 200
+    assert loaded.status_code == 200
+    assert loaded.json()["selectedModelId"] == "yolo11x-onnx"
+    assert loaded.json()["selectedCameraId"] == "camera-1"
+    assert loaded.json()["language"] == "zh"
+    assert loaded.json()["appearance"] == "dark"
+    assert loaded.json()["lmStudioModelId"] == "vision-model"
+    assert loaded.json()["lmStudioPrompt"] == "测试提示词"
+    assert loaded.json()["historyRetentionDays"] == 7
+    assert loaded.json()["confidenceThreshold"] == 0.72
+    assert loaded.json()["visionTriggerSettings"]["cooldownSeconds"] == 12
 
 
 def test_vision_analyze_returns_chat_message(monkeypatch) -> None:
@@ -231,6 +273,38 @@ def test_vision_event_screenshot_returns_saved_file(monkeypatch, tmp_path) -> No
     assert screenshot.status_code == 200
     assert screenshot.headers["content-type"] in {"image/webp", "image/jpeg"}
     assert len(screenshot.content) > 0
+
+
+def test_vision_analyze_uses_retention_days_for_event_expiry(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data(),
+            "eventType": "person_moved",
+            "frameId": 9,
+            "retentionDays": 3,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.92,
+                    "box": {"x": 40, "y": 40, "width": 40, "height": 60},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    event_id = response.json()["eventId"]
+    event = client.get(f"/vision/events/{event_id}").json()
+    created_at = datetime.fromisoformat(event["createdAt"])
+    expires_at = datetime.fromisoformat(event["expiresAt"])
+    assert round((expires_at - created_at).total_seconds()) == 3 * 24 * 60 * 60
 
 
 def test_vision_events_filters_by_keyword(monkeypatch, tmp_path) -> None:

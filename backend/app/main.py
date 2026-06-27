@@ -12,6 +12,7 @@ import httpx
 
 from app.model_registry import ModelRegistry
 from app.schemas import (
+    AppSettings,
     DetectFrameRequest,
     DetectFrameResponse,
     HealthResponse,
@@ -25,11 +26,13 @@ from app.schemas import (
     VisionModelsRequest,
     VisionModelsResponse,
 )
+from app.settings_store import AppSettingsStore
 from app.vision_store import VisionEventStore
 
 app = FastAPI(title="Seeya API")
 registry = ModelRegistry()
 event_store = VisionEventStore()
+settings_store = AppSettingsStore(event_store.data_dir)
 LM_STUDIO_TIMEOUT_SECONDS = 45.0
 DEFAULT_VISION_PROMPT = "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。"
 
@@ -67,6 +70,16 @@ async def select_model(payload: SelectModelRequest) -> ModelsResponse:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return ModelsResponse(models=registry.list_models(), selectedModelId=registry.selected_model_id)
+
+
+@app.get("/settings", response_model=AppSettings)
+async def get_settings() -> AppSettings:
+    return settings_store.get_settings()
+
+
+@app.put("/settings", response_model=AppSettings)
+async def put_settings(payload: AppSettings) -> AppSettings:
+    return settings_store.save_settings(payload)
 
 
 @app.post("/vision/models", response_model=VisionModelsResponse)
@@ -151,6 +164,7 @@ async def vision_analyze(payload: VisionAnalyzeRequest) -> VisionAnalyzeResponse
             image_data=payload.imageData,
             model_id=payload.modelId,
             frame_id=payload.frameId,
+            retention_days=payload.retentionDays,
             now=created_at,
         )
         event_id = persistence.event_id

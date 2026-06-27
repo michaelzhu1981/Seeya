@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { Activity, Camera, CircleStop, FileText, Image, Play, RefreshCw, Search, Settings, Wifi, WifiOff, X } from "lucide-react";
 import type {
+  AppSettings,
   Detection,
   DetectResponse,
   ModelInfo,
@@ -10,18 +11,12 @@ import type {
   VisionEventsResponse,
   VisionModelInfo,
   VisionModelsResponse,
+  VisionTriggerSettings,
 } from "./types";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8010";
 const WS_BASE_URL = API_BASE_URL.replace(/^http/, "ws");
-const MODEL_STORAGE_KEY = "seeya.selectedModelId";
-const LANGUAGE_STORAGE_KEY = "seeya.language";
-const APPEARANCE_STORAGE_KEY = "seeya.appearance";
-const LM_STUDIO_URL_STORAGE_KEY = "seeya.lmStudioUrl";
-const LM_STUDIO_MODEL_STORAGE_KEY = "seeya.lmStudioModelId";
-const LM_STUDIO_PROMPT_STORAGE_KEY = "seeya.lmStudioPrompt";
-const VISION_TRIGGER_SETTINGS_STORAGE_KEY = "seeya.visionTriggerSettings";
 const TARGET_FPS = 5;
 const CAMERA_OFF_ID = "camera-off";
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.55;
@@ -29,6 +24,7 @@ const FRAME_JPEG_QUALITY = 0.88;
 const DEFAULT_LM_STUDIO_URL = "http://192.168.4.181:1234/v1";
 const DEFAULT_LM_STUDIO_MODEL = "qwen/qwen3-v1-4b";
 const DEFAULT_LM_STUDIO_PROMPT = "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。";
+const DEFAULT_HISTORY_RETENTION_DAYS = 1;
 const MAX_VISION_MESSAGES = 50;
 const BOX_SMOOTHING_ALPHA = 0.65;
 
@@ -36,14 +32,6 @@ type Language = "en" | "zh";
 type Appearance = "system" | "dark" | "light";
 type VisionEventType = "new_person" | "person_moved";
 type VisionMessageStatus = "pending" | "success" | "error";
-type VisionTriggerSettings = {
-  cooldownSeconds: number;
-  stableConfirmFrames: number;
-  missToleranceFrames: number;
-  trackIouThreshold: number;
-  movementDistancePercent: number;
-  movementIouThreshold: number;
-};
 type VisionMessage = {
   id: string;
   eventType: VisionEventType;
@@ -84,6 +72,19 @@ const DEFAULT_TRIGGER_SETTINGS: VisionTriggerSettings = {
   movementIouThreshold: 0.55,
 };
 
+const DEFAULT_APP_SETTINGS: AppSettings = {
+  selectedModelId: null,
+  selectedCameraId: null,
+  language: "en",
+  appearance: "system",
+  lmStudioUrl: DEFAULT_LM_STUDIO_URL,
+  lmStudioModelId: DEFAULT_LM_STUDIO_MODEL,
+  lmStudioPrompt: DEFAULT_LM_STUDIO_PROMPT,
+  visionTriggerSettings: DEFAULT_TRIGGER_SETTINGS,
+  historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
+  confidenceThreshold: DEFAULT_CONFIDENCE_THRESHOLD,
+};
+
 const copy = {
   en: {
     camera: "Camera",
@@ -114,6 +115,9 @@ const copy = {
     english: "English",
     chinese: "中文",
     appearance: "Appearance",
+    historyRetentionDays: "History data retention",
+    historyRetentionDaysHelp: "How many days database records and saved screenshots are kept before automatic cleanup.",
+    days: "days",
     system: "System",
     dark: "Dark",
     light: "Light",
@@ -138,7 +142,7 @@ const copy = {
     lmStudioUrl: "LM Studio URL",
     editLmStudioPrompt: "Edit prompt",
     promptDialogTitle: "LM Studio prompt",
-    promptDialogHelp: "This prompt is saved locally and sent with each LM Studio vision request.",
+    promptDialogHelp: "This prompt is saved in the backend database and sent with each LM Studio vision request.",
     savePrompt: "Save",
     cancelPrompt: "Cancel",
     checkModels: "Check models",
@@ -211,6 +215,9 @@ const copy = {
     english: "English",
     chinese: "中文",
     appearance: "外观",
+    historyRetentionDays: "历史数据保存时间",
+    historyRetentionDaysHelp: "数据库记录和已保存图片自动清理前保留的天数。",
+    days: "天",
     system: "系统",
     dark: "深色",
     light: "浅色",
@@ -235,7 +242,7 @@ const copy = {
     lmStudioUrl: "LM Studio URL",
     editLmStudioPrompt: "修改提示词",
     promptDialogTitle: "LM Studio 提示词",
-    promptDialogHelp: "提示词会保存在本地，并随每次 LM Studio 图像识别请求发送。",
+    promptDialogHelp: "提示词会保存在后端数据库，并随每次 LM Studio 图像识别请求发送。",
     savePrompt: "保存",
     cancelPrompt: "取消",
     checkModels: "检测模型",
@@ -281,45 +288,40 @@ const copy = {
   },
 } satisfies Record<Language, Record<string, string>>;
 
-function readStoredLanguage(): Language {
-  return window.localStorage.getItem(LANGUAGE_STORAGE_KEY) === "zh" ? "zh" : "en";
-}
-
-function readStoredAppearance(): Appearance {
-  const value = window.localStorage.getItem(APPEARANCE_STORAGE_KEY);
-  return value === "dark" || value === "light" || value === "system" ? value : "system";
-}
-
-function readStoredTriggerSettings(): VisionTriggerSettings {
-  const stored = window.localStorage.getItem(VISION_TRIGGER_SETTINGS_STORAGE_KEY);
-  if (!stored) {
-    return DEFAULT_TRIGGER_SETTINGS;
-  }
-  try {
-    const value = JSON.parse(stored) as Partial<VisionTriggerSettings>;
-    return {
-      cooldownSeconds: clampNumber(value.cooldownSeconds, 1, 60, DEFAULT_TRIGGER_SETTINGS.cooldownSeconds),
-      stableConfirmFrames: Math.round(clampNumber(value.stableConfirmFrames, 1, 10, DEFAULT_TRIGGER_SETTINGS.stableConfirmFrames)),
-      missToleranceFrames: Math.round(clampNumber(value.missToleranceFrames, 0, 10, DEFAULT_TRIGGER_SETTINGS.missToleranceFrames)),
-      trackIouThreshold: clampNumber(value.trackIouThreshold, 0.1, 0.9, DEFAULT_TRIGGER_SETTINGS.trackIouThreshold),
-      movementDistancePercent: clampNumber(
-        value.movementDistancePercent,
-        1,
-        50,
-        DEFAULT_TRIGGER_SETTINGS.movementDistancePercent,
-      ),
-      movementIouThreshold: clampNumber(value.movementIouThreshold, 0.1, 0.95, DEFAULT_TRIGGER_SETTINGS.movementIouThreshold),
-    };
-  } catch {
-    return DEFAULT_TRIGGER_SETTINGS;
-  }
-}
-
 function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return fallback;
   }
   return Math.min(max, Math.max(min, value));
+}
+
+function normalizeTriggerSettings(value: Partial<VisionTriggerSettings> | undefined): VisionTriggerSettings {
+  return {
+    cooldownSeconds: clampNumber(value?.cooldownSeconds, 1, 60, DEFAULT_TRIGGER_SETTINGS.cooldownSeconds),
+    stableConfirmFrames: Math.round(clampNumber(value?.stableConfirmFrames, 1, 10, DEFAULT_TRIGGER_SETTINGS.stableConfirmFrames)),
+    missToleranceFrames: Math.round(clampNumber(value?.missToleranceFrames, 0, 10, DEFAULT_TRIGGER_SETTINGS.missToleranceFrames)),
+    trackIouThreshold: clampNumber(value?.trackIouThreshold, 0.1, 0.9, DEFAULT_TRIGGER_SETTINGS.trackIouThreshold),
+    movementDistancePercent: clampNumber(value?.movementDistancePercent, 1, 50, DEFAULT_TRIGGER_SETTINGS.movementDistancePercent),
+    movementIouThreshold: clampNumber(value?.movementIouThreshold, 0.1, 0.95, DEFAULT_TRIGGER_SETTINGS.movementIouThreshold),
+  };
+}
+
+function normalizeAppSettings(value: Partial<AppSettings> | undefined): AppSettings {
+  const language = value?.language === "zh" ? "zh" : "en";
+  const appearance =
+    value?.appearance === "dark" || value?.appearance === "light" || value?.appearance === "system" ? value.appearance : "system";
+  return {
+    selectedModelId: value?.selectedModelId || null,
+    selectedCameraId: value?.selectedCameraId || null,
+    language,
+    appearance,
+    lmStudioUrl: value?.lmStudioUrl?.trim() || DEFAULT_LM_STUDIO_URL,
+    lmStudioModelId: value?.lmStudioModelId?.trim() || DEFAULT_LM_STUDIO_MODEL,
+    lmStudioPrompt: value?.lmStudioPrompt?.trim() || DEFAULT_LM_STUDIO_PROMPT,
+    visionTriggerSettings: normalizeTriggerSettings(value?.visionTriggerSettings),
+    historyRetentionDays: Math.round(clampNumber(value?.historyRetentionDays, 1, 365, DEFAULT_HISTORY_RETENTION_DAYS)),
+    confidenceThreshold: clampNumber(value?.confidenceThreshold, 0, 1, DEFAULT_CONFIDENCE_THRESHOLD),
+  };
 }
 
 function normalizeStatus(status: string): string {
@@ -331,6 +333,26 @@ function resolveInitialModelId(models: ModelInfo[], savedModelId: string | null,
   const savedModel = models.find((model) => model.id === savedModelId && model.available);
 
   return savedModel?.id ?? recommendedModel?.id ?? backendSelectedModelId;
+}
+
+async function fetchAppSettings(): Promise<AppSettings> {
+  const response = await fetch(`${API_BASE_URL}/settings`);
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  return normalizeAppSettings((await response.json()) as Partial<AppSettings>);
+}
+
+async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
+  const response = await fetch(`${API_BASE_URL}/settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  if (!response.ok) {
+    throw new Error(await readApiError(response));
+  }
+  return normalizeAppSettings((await response.json()) as Partial<AppSettings>);
 }
 
 function createSessionId(): string {
@@ -358,9 +380,9 @@ function dateInputToDateTimeInputValue(value: string, boundary: "start" | "end")
   return value ? `${value}${boundary === "start" ? "T00:00" : "T23:59"}` : "";
 }
 
-function readDefaultHistoryRange(): { start: string; end: string } {
+function readDefaultHistoryRange(retentionDays = DEFAULT_HISTORY_RETENTION_DAYS): { start: string; end: string } {
   const end = new Date();
-  const start = new Date(end.getTime() - 48 * 60 * 60 * 1000);
+  const start = new Date(end.getTime() - retentionDays * 24 * 60 * 60 * 1000);
   return {
     start: toDateTimeInputValue(start),
     end: toDateTimeInputValue(end),
@@ -377,30 +399,27 @@ function App() {
   const detectionTrackerRef = React.useRef<DetectionTracker>({ nextTrackId: 1, tracks: [] });
   const lastVisionRequestAtRef = React.useRef(-Number.POSITIVE_INFINITY);
   const triggerSettingsRef = React.useRef<VisionTriggerSettings>(DEFAULT_TRIGGER_SETTINGS);
+  const historyRetentionDaysRef = React.useRef(DEFAULT_HISTORY_RETENTION_DAYS);
   const lmStudioUrlRef = React.useRef(DEFAULT_LM_STUDIO_URL);
   const lmStudioPromptRef = React.useRef(DEFAULT_LM_STUDIO_PROMPT);
   const selectedVisionModelIdRef = React.useRef("");
+  const settingsHydratedRef = React.useRef(false);
   const sessionIdRef = React.useRef(createSessionId());
 
   const [models, setModels] = React.useState<ModelInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState("");
   const [visionModels, setVisionModels] = React.useState<VisionModelInfo[]>([]);
-  const [selectedVisionModelId, setSelectedVisionModelId] = React.useState(
-    () => window.localStorage.getItem(LM_STUDIO_MODEL_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_MODEL,
-  );
-  const [lmStudioUrl, setLmStudioUrl] = React.useState(
-    () => window.localStorage.getItem(LM_STUDIO_URL_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_URL,
-  );
-  const [lmStudioPrompt, setLmStudioPrompt] = React.useState(
-    () => window.localStorage.getItem(LM_STUDIO_PROMPT_STORAGE_KEY) ?? DEFAULT_LM_STUDIO_PROMPT,
-  );
+  const [selectedVisionModelId, setSelectedVisionModelId] = React.useState(DEFAULT_LM_STUDIO_MODEL);
+  const [lmStudioUrl, setLmStudioUrl] = React.useState(DEFAULT_LM_STUDIO_URL);
+  const [lmStudioPrompt, setLmStudioPrompt] = React.useState(DEFAULT_LM_STUDIO_PROMPT);
   const [promptDraft, setPromptDraft] = React.useState("");
   const [promptDialogOpen, setPromptDialogOpen] = React.useState(false);
   const [isCheckingVisionModels, setIsCheckingVisionModels] = React.useState(false);
-  const [triggerSettings, setTriggerSettings] = React.useState<VisionTriggerSettings>(() => readStoredTriggerSettings());
+  const [triggerSettings, setTriggerSettings] = React.useState<VisionTriggerSettings>(DEFAULT_TRIGGER_SETTINGS);
+  const [historyRetentionDays, setHistoryRetentionDays] = React.useState(DEFAULT_HISTORY_RETENTION_DAYS);
   const [visionMessages, setVisionMessages] = React.useState<VisionMessage[]>([]);
   const [selectedVisionMessageId, setSelectedVisionMessageId] = React.useState("");
-  const [historyRange, setHistoryRange] = React.useState(readDefaultHistoryRange);
+  const [historyRange, setHistoryRange] = React.useState(() => readDefaultHistoryRange(DEFAULT_HISTORY_RETENTION_DAYS));
   const [historyKeyword, setHistoryKeyword] = React.useState("");
   const [historyDialogOpen, setHistoryDialogOpen] = React.useState(false);
   const [historyEvents, setHistoryEvents] = React.useState<VisionEventRecord[]>([]);
@@ -423,8 +442,8 @@ function App() {
   const [latencyMs, setLatencyMs] = React.useState(0);
   const [error, setError] = React.useState("");
   const [settingsOpen, setSettingsOpen] = React.useState(false);
-  const [language, setLanguage] = React.useState<Language>(() => readStoredLanguage());
-  const [appearance, setAppearance] = React.useState<Appearance>(() => readStoredAppearance());
+  const [language, setLanguage] = React.useState<Language>(DEFAULT_APP_SETTINGS.language);
+  const [appearance, setAppearance] = React.useState<Appearance>(DEFAULT_APP_SETTINGS.appearance);
   const [systemPrefersDark, setSystemPrefersDark] = React.useState(() =>
     window.matchMedia("(prefers-color-scheme: dark)").matches,
   );
@@ -466,14 +485,6 @@ function App() {
   }, [cameraState, t]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
-  }, [language]);
-
-  React.useEffect(() => {
-    window.localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance);
-  }, [appearance]);
-
-  React.useEffect(() => {
     return () => {
       if (historyImageUrl) {
         URL.revokeObjectURL(historyImageUrl);
@@ -482,24 +493,64 @@ function App() {
   }, [historyImageUrl]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(LM_STUDIO_URL_STORAGE_KEY, lmStudioUrl);
     lmStudioUrlRef.current = lmStudioUrl;
   }, [lmStudioUrl]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(LM_STUDIO_PROMPT_STORAGE_KEY, lmStudioPrompt);
     lmStudioPromptRef.current = lmStudioPrompt;
   }, [lmStudioPrompt]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(LM_STUDIO_MODEL_STORAGE_KEY, selectedVisionModelId);
     selectedVisionModelIdRef.current = selectedVisionModelId;
   }, [selectedVisionModelId]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(VISION_TRIGGER_SETTINGS_STORAGE_KEY, JSON.stringify(triggerSettings));
     triggerSettingsRef.current = triggerSettings;
   }, [triggerSettings]);
+
+  React.useEffect(() => {
+    historyRetentionDaysRef.current = historyRetentionDays;
+  }, [historyRetentionDays]);
+
+  const currentAppSettings = React.useMemo(
+    () =>
+      normalizeAppSettings({
+        selectedModelId: selectedModelId || null,
+        selectedCameraId: selectedCameraId || null,
+        language,
+        appearance,
+        lmStudioUrl,
+        lmStudioModelId: selectedVisionModelId,
+        lmStudioPrompt,
+        visionTriggerSettings: triggerSettings,
+        historyRetentionDays,
+        confidenceThreshold: threshold,
+      }),
+    [
+      appearance,
+      historyRetentionDays,
+      language,
+      lmStudioPrompt,
+      lmStudioUrl,
+      selectedCameraId,
+      selectedModelId,
+      selectedVisionModelId,
+      threshold,
+      triggerSettings,
+    ],
+  );
+
+  React.useEffect(() => {
+    if (!settingsHydratedRef.current) {
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      saveAppSettings(currentAppSettings).catch((err: unknown) => {
+        setError(err instanceof Error ? err.message : "Unable to save settings");
+      });
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [currentAppSettings]);
 
   React.useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -508,17 +559,29 @@ function App() {
     return () => media.removeEventListener("change", handleChange);
   }, []);
 
-  const loadModels = React.useCallback(async () => {
+  const applyAppSettings = React.useCallback((settings: AppSettings) => {
+    setSelectedModelId(settings.selectedModelId ?? "");
+    setSelectedCameraId(settings.selectedCameraId ?? "");
+    setLanguage(settings.language);
+    setAppearance(settings.appearance);
+    setLmStudioUrl(settings.lmStudioUrl);
+    setSelectedVisionModelId(settings.lmStudioModelId);
+    setLmStudioPrompt(settings.lmStudioPrompt);
+    setTriggerSettings(settings.visionTriggerSettings);
+    setHistoryRetentionDays(settings.historyRetentionDays);
+    setHistoryRange(readDefaultHistoryRange(settings.historyRetentionDays));
+    setThreshold(settings.confidenceThreshold);
+  }, []);
+
+  const loadModels = React.useCallback(async (savedModelId: string | null) => {
     const response = await fetch(`${API_BASE_URL}/models`);
     if (!response.ok) {
       throw new Error(`Backend returned ${response.status}`);
     }
     const data = (await response.json()) as { models: ModelInfo[]; selectedModelId: string };
-    const savedModelId = window.localStorage.getItem(MODEL_STORAGE_KEY);
     const initialModelId = resolveInitialModelId(data.models, savedModelId, data.selectedModelId);
     setModels(data.models);
     setSelectedModelId(initialModelId);
-    window.localStorage.setItem(MODEL_STORAGE_KEY, initialModelId);
     setModelStatus("Ready");
   }, []);
 
@@ -746,6 +809,7 @@ function App() {
             imageData,
             eventType: visionEvent.eventType,
             frameId,
+            retentionDays: historyRetentionDaysRef.current,
             sessionId: sessionIdRef.current,
             trackId: visionEvent.trackId,
             detections: frameDetections,
@@ -775,12 +839,29 @@ function App() {
   );
 
   React.useEffect(() => {
-    loadModels().catch((err: unknown) => {
+    let cancelled = false;
+    const loadInitialState = async () => {
+      const settings = await fetchAppSettings();
+      if (cancelled) {
+        return;
+      }
+      applyAppSettings(settings);
+      await loadModels(settings.selectedModelId);
+      settingsHydratedRef.current = true;
+    };
+    loadInitialState().catch((err: unknown) => {
+      if (cancelled) {
+        return;
+      }
+      settingsHydratedRef.current = true;
       setConnectionState("error");
       setModelStatus("Backend unavailable");
-      setError(err instanceof Error ? err.message : t.backendUnavailable);
+      setError(err instanceof Error ? err.message : copy.en.backendUnavailable);
     });
-  }, [loadModels, t.backendUnavailable]);
+    return () => {
+      cancelled = true;
+    };
+  }, [applyAppSettings, loadModels]);
 
   React.useEffect(() => {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -789,6 +870,15 @@ function App() {
     }
     refreshCameras().catch(() => setCameraState("Camera permission needed"));
   }, [refreshCameras]);
+
+  React.useEffect(() => {
+    setSelectedCameraId((current) => {
+      if (current === CAMERA_OFF_ID || cameras.some((camera) => camera.deviceId === current)) {
+        return current;
+      }
+      return cameras[0]?.deviceId || CAMERA_OFF_ID;
+    });
+  }, [cameras]);
 
   React.useEffect(() => {
     drawOverlay(videoRef.current, overlayRef.current, detections);
@@ -972,7 +1062,6 @@ function App() {
       setModelStatus("Error");
       return;
     }
-    window.localStorage.setItem(MODEL_STORAGE_KEY, nextModelId);
     setSelectedModelId(nextModelId);
     setModelStatus("Ready");
   };
@@ -1038,6 +1127,22 @@ function App() {
                   <option value="dark">{t.dark}</option>
                   <option value="light">{t.light}</option>
                 </select>
+              </label>
+              <label className="settings-control" title={t.historyRetentionDaysHelp}>
+                <span>{t.historyRetentionDays}</span>
+                <div className="retention-control">
+                  <input
+                    type="number"
+                    min={1}
+                    max={365}
+                    step={1}
+                    value={historyRetentionDays}
+                    onChange={(event) =>
+                      setHistoryRetentionDays(Math.round(clampNumber(Number(event.target.value), 1, 365, DEFAULT_HISTORY_RETENTION_DAYS)))
+                    }
+                  />
+                  <strong>{t.days}</strong>
+                </div>
               </label>
             </div>
           ) : null}

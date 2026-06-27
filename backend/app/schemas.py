@@ -30,6 +30,28 @@ class HealthResponse(BaseModel):
     runtime: str
 
 
+class VisionTriggerSettings(BaseModel):
+    cooldownSeconds: float = Field(default=8, ge=1, le=60)
+    stableConfirmFrames: int = Field(default=2, ge=1, le=10)
+    missToleranceFrames: int = Field(default=2, ge=0, le=10)
+    trackIouThreshold: float = Field(default=0.35, ge=0.1, le=0.9)
+    movementDistancePercent: float = Field(default=8, ge=1, le=50)
+    movementIouThreshold: float = Field(default=0.55, ge=0.1, le=0.95)
+
+
+class AppSettings(BaseModel):
+    selectedModelId: str | None = None
+    selectedCameraId: str | None = None
+    language: str = Field(default="en", pattern="^(en|zh)$")
+    appearance: str = Field(default="system", pattern="^(system|dark|light)$")
+    lmStudioUrl: str = Field(default="http://192.168.4.181:1234/v1", min_length=1)
+    lmStudioModelId: str = Field(default="qwen/qwen3-v1-4b")
+    lmStudioPrompt: str = Field(default="请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。")
+    visionTriggerSettings: VisionTriggerSettings = Field(default_factory=VisionTriggerSettings)
+    historyRetentionDays: int = Field(default=1, ge=1, le=365)
+    confidenceThreshold: float = Field(default=0.55, ge=0, le=1)
+
+
 class Box(BaseModel):
     x: float = Field(ge=0)
     y: float = Field(ge=0)
@@ -79,6 +101,7 @@ class VisionAnalyzeRequest(BaseModel):
     imageData: str = Field(min_length=1)
     eventType: str = Field(pattern="^(new_person|person_moved)$")
     frameId: int
+    retentionDays: int = Field(default=1, ge=1, le=365)
     sessionId: str | None = None
     trackId: int | None = None
     detections: list[Detection] = Field(default_factory=list)

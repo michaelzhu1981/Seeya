@@ -198,6 +198,22 @@ textarea {
   text-transform: uppercase;
 }
 
+.retention-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.retention-control input {
+  width: 100%;
+}
+
+.retention-control strong {
+  color: #e9f1f6;
+  font-size: 13px;
+}
+
 .workspace {
   flex: 1;
   min-height: 0;
@@ -1063,6 +1079,10 @@ video,
 .app-shell.theme-light .history-dialog-header strong,
 .app-shell.theme-light .muted {
   color: #637381;
+}
+
+.app-shell.theme-light .retention-control strong {
+  color: #16242e;
 }
 
 .app-shell.theme-light .viewer,
