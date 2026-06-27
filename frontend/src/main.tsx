@@ -135,6 +135,12 @@ const copy = {
     trackIou: "Track IoU",
     moveDistance: "Move distance",
     moveIou: "Move IoU",
+    globalCooldownHelp: "Minimum time between screenshot requests. While cooling down, no person event sends an image to LM Studio.",
+    stableFramesHelp: "How many consecutive frames a new person must appear before triggering a new-person event.",
+    missToleranceHelp: "How many missed frames a track can survive before it is removed.",
+    trackIouHelp: "Minimum bounding-box overlap needed to treat a detection as the same tracked person.",
+    moveDistanceHelp: "How far a tracked person's box center must move, as a percent of the frame diagonal, to trigger movement.",
+    moveIouHelp: "If overlap with the last event box falls below this value, trigger a movement event.",
     visionMessages: "Vision messages",
     noVisionMessages: "No vision messages yet.",
     messageDetail: "Message detail",
@@ -205,6 +211,12 @@ const copy = {
     trackIou: "Track IoU",
     moveDistance: "移动距离",
     moveIou: "移动 IoU",
+    globalCooldownHelp: "两次截图识别请求之间的最短间隔。冷却期间，任何人员事件都不会发送截图到 LM Studio。",
+    stableFramesHelp: "新的人需要连续出现多少帧，才触发“新的人”事件。",
+    missToleranceHelp: "Track 丢失后还能保留多少帧，超过后会被移除。",
+    trackIouHelp: "检测框重叠度达到多少，才认为是同一个被跟踪的人。",
+    moveDistanceHelp: "人的检测框中心移动超过画面对角线的多少比例，才触发“人移动”事件。",
+    moveIouHelp: "当前框与上次触发事件时的框重叠度低于该值时，触发“人移动”事件。",
     visionMessages: "图像识别消息",
     noVisionMessages: "暂无图像识别消息。",
     messageDetail: "消息详情",
@@ -894,6 +906,7 @@ function App() {
             <div className="trigger-grid">
               <NumberControl
                 label={t.globalCooldown}
+                tooltip={t.globalCooldownHelp}
                 suffix="s"
                 value={triggerSettings.cooldownSeconds}
                 min={1}
@@ -903,6 +916,7 @@ function App() {
               />
               <NumberControl
                 label={t.stableFrames}
+                tooltip={t.stableFramesHelp}
                 value={triggerSettings.stableConfirmFrames}
                 min={1}
                 max={10}
@@ -911,6 +925,7 @@ function App() {
               />
               <NumberControl
                 label={t.missTolerance}
+                tooltip={t.missToleranceHelp}
                 value={triggerSettings.missToleranceFrames}
                 min={0}
                 max={10}
@@ -919,6 +934,7 @@ function App() {
               />
               <NumberControl
                 label={t.trackIou}
+                tooltip={t.trackIouHelp}
                 value={triggerSettings.trackIouThreshold}
                 min={0.1}
                 max={0.9}
@@ -928,6 +944,7 @@ function App() {
               />
               <NumberControl
                 label={t.moveDistance}
+                tooltip={t.moveDistanceHelp}
                 suffix="%"
                 value={triggerSettings.movementDistancePercent}
                 min={1}
@@ -937,6 +954,7 @@ function App() {
               />
               <NumberControl
                 label={t.moveIou}
+                tooltip={t.moveIouHelp}
                 value={triggerSettings.movementIouThreshold}
                 min={0.1}
                 max={0.95}
@@ -1167,6 +1185,7 @@ function Metric({ label, value }: { label: string; value: string }) {
 
 function NumberControl({
   label,
+  tooltip,
   suffix,
   value,
   min,
@@ -1176,6 +1195,7 @@ function NumberControl({
   onChange,
 }: {
   label: string;
+  tooltip: string;
   suffix?: string;
   value: number;
   min: number;
@@ -1186,7 +1206,7 @@ function NumberControl({
 }) {
   const displayValue = precision > 0 ? value.toFixed(precision) : String(value);
   return (
-    <label className="number-control">
+    <label className="number-control" data-tooltip={tooltip} title={tooltip}>
       <span>{label}</span>
       <strong>
         {displayValue}
