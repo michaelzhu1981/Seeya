@@ -5,8 +5,9 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 import httpx
 
 from app.model_registry import ModelRegistry
@@ -18,13 +19,17 @@ from app.schemas import (
     SelectModelRequest,
     VisionAnalyzeRequest,
     VisionAnalyzeResponse,
+    VisionEventRecord,
+    VisionEventsResponse,
     VisionModelInfo,
     VisionModelsRequest,
     VisionModelsResponse,
 )
+from app.vision_store import VisionEventStore
 
 app = FastAPI(title="Seeya API")
 registry = ModelRegistry()
+event_store = VisionEventStore()
 LM_STUDIO_TIMEOUT_SECONDS = 45.0
 DEFAULT_VISION_PROMPT = "请用中文简洁描述截图中可见的人、动作、位置变化和明显风险。"
 
@@ -132,11 +137,71 @@ async def vision_analyze(payload: VisionAnalyzeRequest) -> VisionAnalyzeResponse
     if not message:
         raise HTTPException(status_code=502, detail="LM Studio response did not include message content")
 
+    created_at = datetime.now(UTC)
+    event_id: str | None = None
+    duplicate_count = 0
+    deduplicated = False
+    try:
+        persistence = event_store.save_or_merge_event(
+            session_id=payload.sessionId,
+            track_id=payload.trackId,
+            event_type=payload.eventType,
+            message=message,
+            detections=payload.detections,
+            image_data=payload.imageData,
+            model_id=payload.modelId,
+            frame_id=payload.frameId,
+            now=created_at,
+        )
+        event_id = persistence.event_id
+        duplicate_count = persistence.duplicate_count
+        deduplicated = persistence.deduplicated
+    except Exception:
+        event_id = None
+
     return VisionAnalyzeResponse(
         message=message,
-        createdAt=datetime.now(UTC).isoformat(),
+        createdAt=created_at.isoformat(),
         modelId=payload.modelId,
+        eventId=event_id,
+        duplicateCount=duplicate_count,
+        deduplicated=deduplicated,
     )
+
+
+@app.get("/vision/events", response_model=VisionEventsResponse)
+async def vision_events(
+    startAt: str | None = None,
+    endAt: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> VisionEventsResponse:
+    return VisionEventsResponse(
+        events=[
+            VisionEventRecord.model_validate(event)
+            for event in event_store.list_events(
+                start_at=parse_optional_datetime(startAt),
+                end_at=parse_optional_datetime(endAt),
+                limit=limit,
+            )
+        ]
+    )
+
+
+@app.get("/vision/events/{event_id}", response_model=VisionEventRecord)
+async def vision_event(event_id: str) -> VisionEventRecord:
+    event = event_store.get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Vision event not found")
+    return VisionEventRecord.model_validate(event)
+
+
+@app.get("/vision/events/{event_id}/screenshot")
+async def vision_event_screenshot(event_id: str) -> FileResponse:
+    screenshot = event_store.screenshot_file(event_id)
+    if screenshot is None:
+        raise HTTPException(status_code=404, detail="Vision event screenshot not found")
+    path, media_type = screenshot
+    return FileResponse(path, media_type=media_type)
 
 
 def normalize_lm_studio_base_url(raw_url: str) -> str:
@@ -145,6 +210,17 @@ def normalize_lm_studio_base_url(raw_url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=422, detail="LM Studio URL must start with http:// or https://")
     return base_url
+
+
+def parse_optional_datetime(raw_value: str | None) -> datetime | None:
+    if not raw_value:
+        return None
+    normalized = raw_value.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid datetime: {raw_value}") from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 def build_vision_prompt(payload: VisionAnalyzeRequest) -> str:

@@ -40,4 +40,34 @@ export type VisionAnalyzeResponse = {
   message: string;
   createdAt: string;
   modelId: string;
+  eventId: string | null;
+  duplicateCount: number;
+  deduplicated: boolean;
+};
+
+export type VisionEventRecord = {
+  id: string;
+  sessionId: string | null;
+  trackId: number | null;
+  eventType: "new_person" | "person_moved";
+  modelId: string;
+  frameId: number;
+  message: string;
+  summary: string;
+  detections: Detection[];
+  primaryBox: Detection["box"] | null;
+  duplicateCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  createdAt: string;
+  expiresAt: string;
+  hasScreenshot: boolean;
+  screenshotMimeType: string | null;
+  screenshotSizeBytes: number;
+  screenshotWidth: number;
+  screenshotHeight: number;
+};
+
+export type VisionEventsResponse = {
+  events: VisionEventRecord[];
 };

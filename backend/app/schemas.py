@@ -79,6 +79,8 @@ class VisionAnalyzeRequest(BaseModel):
     imageData: str = Field(min_length=1)
     eventType: str = Field(pattern="^(new_person|person_moved)$")
     frameId: int
+    sessionId: str | None = None
+    trackId: int | None = None
     detections: list[Detection] = Field(default_factory=list)
 
 
@@ -86,3 +88,33 @@ class VisionAnalyzeResponse(BaseModel):
     message: str
     createdAt: str
     modelId: str
+    eventId: str | None = None
+    duplicateCount: int = 0
+    deduplicated: bool = False
+
+
+class VisionEventRecord(BaseModel):
+    id: str
+    sessionId: str | None = None
+    trackId: int | None = None
+    eventType: str
+    modelId: str
+    frameId: int
+    message: str
+    summary: str
+    detections: list[dict]
+    primaryBox: dict | None = None
+    duplicateCount: int
+    firstSeenAt: str
+    lastSeenAt: str
+    createdAt: str
+    expiresAt: str
+    hasScreenshot: bool
+    screenshotMimeType: str | None = None
+    screenshotSizeBytes: int
+    screenshotWidth: int
+    screenshotHeight: int
+
+
+class VisionEventsResponse(BaseModel):
+    events: list[VisionEventRecord]

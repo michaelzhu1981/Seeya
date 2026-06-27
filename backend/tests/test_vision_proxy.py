@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import base64
+import io
+
 import httpx
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app import main
+from app.vision_store import VisionEventStore
 
 
 class FakeResponse:
@@ -137,3 +142,100 @@ def test_vision_analyze_requires_message_content(monkeypatch) -> None:
 
     assert response.status_code == 502
     assert "message content" in response.json()["detail"]
+
+
+def test_vision_analyze_deduplicates_recent_same_event_type(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+    image_data = make_image_data()
+
+    first = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": image_data,
+            "eventType": "new_person",
+            "frameId": 1,
+            "sessionId": "session-a",
+            "trackId": 1,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.9,
+                    "box": {"x": 10, "y": 20, "width": 30, "height": 40},
+                }
+            ],
+        },
+    )
+    second = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": image_data,
+            "eventType": "new_person",
+            "frameId": 2,
+            "sessionId": "session-a",
+            "trackId": 99,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.9,
+                    "box": {"x": 12, "y": 22, "width": 30, "height": 40},
+                }
+            ],
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["eventId"] == second.json()["eventId"]
+    assert second.json()["deduplicated"] is True
+    assert second.json()["duplicateCount"] == 1
+
+    events_response = client.get("/vision/events")
+    assert events_response.status_code == 200
+    events = events_response.json()["events"]
+    assert len(events) == 1
+    assert events[0]["duplicateCount"] == 1
+
+
+def test_vision_event_screenshot_returns_saved_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data(),
+            "eventType": "person_moved",
+            "frameId": 3,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.92,
+                    "box": {"x": 40, "y": 40, "width": 40, "height": 60},
+                }
+            ],
+        },
+    )
+
+    event_id = response.json()["eventId"]
+    screenshot = client.get(f"/vision/events/{event_id}/screenshot")
+
+    assert screenshot.status_code == 200
+    assert screenshot.headers["content-type"] in {"image/webp", "image/jpeg"}
+    assert len(screenshot.content) > 0
+
+
+def make_image_data() -> str:
+    image = Image.new("RGB", (96, 64), color=(32, 64, 96))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    payload = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{payload}"

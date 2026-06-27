@@ -54,6 +54,7 @@ pnpm-debug.log*
 tmp/
 temp/
 uploads/
+backend/data/
 *.sqlite
 *.sqlite3
 *.db

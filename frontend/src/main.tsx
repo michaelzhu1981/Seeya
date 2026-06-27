@@ -1,7 +1,16 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Camera, CircleStop, FileText, Play, RefreshCw, Settings, Wifi, WifiOff } from "lucide-react";
-import type { Detection, DetectResponse, ModelInfo, VisionAnalyzeResponse, VisionModelInfo, VisionModelsResponse } from "./types";
+import { Activity, Camera, CircleStop, FileText, History, Image, Play, RefreshCw, Settings, Wifi, WifiOff, X } from "lucide-react";
+import type {
+  Detection,
+  DetectResponse,
+  ModelInfo,
+  VisionAnalyzeResponse,
+  VisionEventRecord,
+  VisionEventsResponse,
+  VisionModelInfo,
+  VisionModelsResponse,
+} from "./types";
 import "./styles.css";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8010";
@@ -156,6 +165,20 @@ const copy = {
     newPerson: "New person",
     personMoved: "Person moved",
     selectVisionModel: "Select an LM Studio model first",
+    historyRecords: "History records",
+    historyStart: "Start",
+    historyEnd: "End",
+    viewHistory: "View history",
+    loadingHistory: "Loading history",
+    historyDialogTitle: "Vision history",
+    noHistoryRecords: "No history records in this range.",
+    viewImage: "View image",
+    noScreenshot: "No screenshot",
+    lastSeen: "Last seen",
+    repeated: "Repeated",
+    close: "Close",
+    imagePreview: "Image preview",
+    imageLoadFailed: "Unable to load image",
   },
   zh: {
     camera: "摄像头",
@@ -237,6 +260,20 @@ const copy = {
     newPerson: "新的人",
     personMoved: "人移动",
     selectVisionModel: "请先选择 LM Studio 模型",
+    historyRecords: "历史记录",
+    historyStart: "开始时间",
+    historyEnd: "结束时间",
+    viewHistory: "查看历史记录",
+    loadingHistory: "加载历史中",
+    historyDialogTitle: "图像识别历史",
+    noHistoryRecords: "该时间范围内没有历史记录。",
+    viewImage: "查看图片",
+    noScreenshot: "无截图",
+    lastSeen: "最后出现",
+    repeated: "重复",
+    close: "关闭",
+    imagePreview: "图片预览",
+    imageLoadFailed: "无法加载图片",
   },
 } satisfies Record<Language, Record<string, string>>;
 
@@ -292,6 +329,29 @@ function resolveInitialModelId(models: ModelInfo[], savedModelId: string | null,
   return savedModel?.id ?? recommendedModel?.id ?? backendSelectedModelId;
 }
 
+function createSessionId(): string {
+  return window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function toDateInputValue(date: Date): string {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+}
+
+function dateInputToIso(value: string, boundary: "start" | "end"): string {
+  const suffix = boundary === "start" ? "T00:00:00" : "T23:59:59.999";
+  return new Date(`${value}${suffix}`).toISOString();
+}
+
+function readDefaultHistoryRange(): { start: string; end: string } {
+  const end = new Date();
+  const start = new Date(end.getTime() - 48 * 60 * 60 * 1000);
+  return {
+    start: toDateInputValue(start),
+    end: toDateInputValue(end),
+  };
+}
+
 function App() {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const overlayRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -305,6 +365,7 @@ function App() {
   const lmStudioUrlRef = React.useRef(DEFAULT_LM_STUDIO_URL);
   const lmStudioPromptRef = React.useRef(DEFAULT_LM_STUDIO_PROMPT);
   const selectedVisionModelIdRef = React.useRef("");
+  const sessionIdRef = React.useRef(createSessionId());
 
   const [models, setModels] = React.useState<ModelInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState("");
@@ -324,6 +385,15 @@ function App() {
   const [triggerSettings, setTriggerSettings] = React.useState<VisionTriggerSettings>(() => readStoredTriggerSettings());
   const [visionMessages, setVisionMessages] = React.useState<VisionMessage[]>([]);
   const [selectedVisionMessageId, setSelectedVisionMessageId] = React.useState("");
+  const [historyRange, setHistoryRange] = React.useState(readDefaultHistoryRange);
+  const [historyDialogOpen, setHistoryDialogOpen] = React.useState(false);
+  const [historyEvents, setHistoryEvents] = React.useState<VisionEventRecord[]>([]);
+  const [selectedHistoryEventId, setSelectedHistoryEventId] = React.useState("");
+  const [isLoadingHistory, setIsLoadingHistory] = React.useState(false);
+  const [historyError, setHistoryError] = React.useState("");
+  const [historyImageUrl, setHistoryImageUrl] = React.useState("");
+  const [isLoadingHistoryImage, setIsLoadingHistoryImage] = React.useState(false);
+  const [historyImageError, setHistoryImageError] = React.useState("");
   const [cameras, setCameras] = React.useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = React.useState("");
   const [cameraState, setCameraState] = React.useState("Camera idle");
@@ -354,6 +424,10 @@ function App() {
     () => visionMessages.find((message) => message.id === selectedVisionMessageId) ?? visionMessages[0],
     [selectedVisionMessageId, visionMessages],
   );
+  const selectedHistoryEvent = React.useMemo(
+    () => historyEvents.find((event) => event.id === selectedHistoryEventId) ?? historyEvents[0],
+    [historyEvents, selectedHistoryEventId],
+  );
 
   const displayModelStatus = React.useMemo(() => {
     const statusKey = normalizeStatus(modelStatus);
@@ -382,6 +456,14 @@ function App() {
   React.useEffect(() => {
     window.localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance);
   }, [appearance]);
+
+  React.useEffect(() => {
+    return () => {
+      if (historyImageUrl) {
+        URL.revokeObjectURL(historyImageUrl);
+      }
+    };
+  }, [historyImageUrl]);
 
   React.useEffect(() => {
     window.localStorage.setItem(LM_STUDIO_URL_STORAGE_KEY, lmStudioUrl);
@@ -493,6 +575,80 @@ function App() {
     [],
   );
 
+  const updateHistoryRange = React.useCallback((key: "start" | "end", value: string) => {
+    setHistoryRange((current) => ({ ...current, [key]: value }));
+  }, []);
+
+  const fetchHistoryEvents = React.useCallback(async () => {
+    setHistoryDialogOpen(true);
+    setIsLoadingHistory(true);
+    setHistoryError("");
+    setHistoryImageError("");
+    setHistoryImageUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return "";
+    });
+    try {
+      const params = new URLSearchParams({
+        startAt: dateInputToIso(historyRange.start, "start"),
+        endAt: dateInputToIso(historyRange.end, "end"),
+        limit: "100",
+      });
+      const response = await fetch(`${API_BASE_URL}/vision/events?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+      const data = (await response.json()) as VisionEventsResponse;
+      setHistoryEvents(data.events);
+      setSelectedHistoryEventId(data.events[0]?.id ?? "");
+    } catch (err) {
+      setHistoryEvents([]);
+      setSelectedHistoryEventId("");
+      setHistoryError(err instanceof Error ? err.message : "Unable to load history");
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, [historyRange.end, historyRange.start]);
+
+  const closeHistoryDialog = React.useCallback(() => {
+    setHistoryDialogOpen(false);
+    setHistoryImageError("");
+    setHistoryImageUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return "";
+    });
+  }, []);
+
+  const loadHistoryImage = React.useCallback(async () => {
+    if (!selectedHistoryEvent?.hasScreenshot) {
+      return;
+    }
+    setIsLoadingHistoryImage(true);
+    setHistoryImageError("");
+    setHistoryImageUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+      return "";
+    });
+    try {
+      const response = await fetch(`${API_BASE_URL}/vision/events/${selectedHistoryEvent.id}/screenshot`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+      const blob = await response.blob();
+      setHistoryImageUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      setHistoryImageError(err instanceof Error ? err.message : t.imageLoadFailed);
+    } finally {
+      setIsLoadingHistoryImage(false);
+    }
+  }, [selectedHistoryEvent, t.imageLoadFailed]);
+
   const captureCurrentFrameImage = React.useCallback((): string => {
     const video = videoRef.current;
     const canvas = captureRef.current;
@@ -562,6 +718,8 @@ function App() {
             imageData,
             eventType: visionEvent.eventType,
             frameId,
+            sessionId: sessionIdRef.current,
+            trackId: visionEvent.trackId,
             detections: frameDetections,
           }),
         });
@@ -1043,6 +1201,35 @@ function App() {
             )}
           </div>
 
+          <div className="history-section">
+            <div className="section-header">
+              <span>{t.historyRecords}</span>
+            </div>
+            <div className="history-controls">
+              <label className="stacked-control">
+                <span>{t.historyStart}</span>
+                <input
+                  type="date"
+                  value={historyRange.start}
+                  onChange={(event) => updateHistoryRange("start", event.target.value)}
+                />
+              </label>
+              <label className="stacked-control">
+                <span>{t.historyEnd}</span>
+                <input
+                  type="date"
+                  value={historyRange.end}
+                  onChange={(event) => updateHistoryRange("end", event.target.value)}
+                />
+              </label>
+              <button className="secondary-button" type="button" onClick={fetchHistoryEvents} disabled={isLoadingHistory}>
+                <History size={16} />
+                {isLoadingHistory ? t.loadingHistory : t.viewHistory}
+              </button>
+            </div>
+            {historyError ? <div className="error-box compact">{historyError}</div> : null}
+          </div>
+
           <div className="vision-messages">
             <div className="section-header">
               <span>{t.visionMessages}</span>
@@ -1097,6 +1284,90 @@ function App() {
               <button className="secondary-button primary-action" type="button" onClick={savePromptDraft}>
                 {t.savePrompt}
               </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {historyDialogOpen ? (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeHistoryDialog}>
+          <section className="history-dialog" role="dialog" aria-modal="true" aria-labelledby="history-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="history-dialog-header">
+              <div>
+                <span id="history-dialog-title">{t.historyDialogTitle}</span>
+                <strong>{historyEvents.length}</strong>
+              </div>
+              <button className="icon-button" type="button" aria-label={t.close} onClick={closeHistoryDialog}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="history-dialog-body">
+              <div className="history-list">
+                {isLoadingHistory ? <p className="muted">{t.loadingHistory}</p> : null}
+                {!isLoadingHistory && historyEvents.length === 0 ? <p className="muted">{historyError || t.noHistoryRecords}</p> : null}
+                {historyEvents.map((event) => (
+                  <button
+                    className={`history-item ${selectedHistoryEvent?.id === event.id ? "selected" : ""}`}
+                    key={event.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedHistoryEventId(event.id);
+                      setHistoryImageError("");
+                      setHistoryImageUrl((current) => {
+                        if (current) {
+                          URL.revokeObjectURL(current);
+                        }
+                        return "";
+                      });
+                    }}
+                  >
+                    <span>{formatTimestamp(event.createdAt)}</span>
+                    <strong>{event.eventType === "new_person" ? t.newPerson : t.personMoved}</strong>
+                    <em>{event.summary}</em>
+                    {event.duplicateCount > 0 ? (
+                      <small>
+                        {t.repeated} {event.duplicateCount}
+                      </small>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
+              <div className="history-detail">
+                {selectedHistoryEvent ? (
+                  <>
+                    <div className="history-meta">
+                      <span>{formatTimestamp(selectedHistoryEvent.createdAt)}</span>
+                      <span>
+                        {t.lastSeen}: {formatTimestamp(selectedHistoryEvent.lastSeenAt)}
+                      </span>
+                      <span>
+                        {t.repeated}: {selectedHistoryEvent.duplicateCount}
+                      </span>
+                      <span>Track: {selectedHistoryEvent.trackId ?? "-"}</span>
+                      <span>Frame: {selectedHistoryEvent.frameId}</span>
+                      <span>{selectedHistoryEvent.modelId}</span>
+                    </div>
+                    <textarea readOnly value={selectedHistoryEvent.message} />
+                    <div className="history-image-actions">
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={loadHistoryImage}
+                        disabled={!selectedHistoryEvent.hasScreenshot || isLoadingHistoryImage}
+                      >
+                        <Image size={16} />
+                        {selectedHistoryEvent.hasScreenshot ? t.viewImage : t.noScreenshot}
+                      </button>
+                      {historyImageError ? <span className="history-image-error">{historyImageError}</span> : null}
+                    </div>
+                    <div className="history-image-frame">
+                      {isLoadingHistoryImage ? <p className="muted">{t.imagePreview}...</p> : null}
+                      {historyImageUrl ? <img src={historyImageUrl} alt={t.imagePreview} /> : null}
+                    </div>
+                  </>
+                ) : (
+                  <p className="muted">{t.noHistoryRecords}</p>
+                )}
+              </div>
             </div>
           </section>
         </div>
