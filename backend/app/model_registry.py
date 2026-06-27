@@ -21,6 +21,22 @@ ONNX_MODEL_SPECS = [
         "input_size": 640,
         "path": MODELS_DIR / "yolo-small.onnx",
     },
+    {
+        "id": "yolo11l-onnx-cpu",
+        "name": "YOLO11 Large ONNX CPU",
+        "runtime": "onnx-cpu",
+        "size": "large",
+        "input_size": 640,
+        "path": MODELS_DIR / "yolo11l.onnx",
+    },
+    {
+        "id": "yolo11x-onnx-cpu",
+        "name": "YOLO11 X ONNX CPU",
+        "runtime": "onnx-cpu",
+        "size": "xlarge",
+        "input_size": 640,
+        "path": MODELS_DIR / "yolo11x.onnx",
+    },
 ]
 
 

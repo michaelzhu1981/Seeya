@@ -9,6 +9,14 @@ def test_registry_has_available_recommended_model() -> None:
     assert registry.selected_model().available
 
 
+def test_registry_exposes_yolo11_large_and_x_models() -> None:
+    registry = ModelRegistry()
+    model_ids = {model.id for model in registry.list_models()}
+
+    assert "yolo11l-onnx-cpu" in model_ids
+    assert "yolo11x-onnx-cpu" in model_ids
+
+
 def test_rejects_unavailable_model() -> None:
     registry = ModelRegistry()
     unavailable = next((model for model in registry.list_models() if not model.available), None)

@@ -60,6 +60,17 @@ yolo export model=yolov8s.pt format=onnx imgsz=640
 mv yolov8s.onnx models/yolo-small.onnx
 ```
 
+Optional higher-accuracy YOLO11 models can be exported to the additional model
+paths surfaced in the UI:
+
+```bash
+yolo export model=yolo11l.pt format=onnx imgsz=640
+mv yolo11l.onnx models/yolo11l.onnx
+
+yolo export model=yolo11x.pt format=onnx imgsz=640
+mv yolo11x.onnx models/yolo11x.onnx
+```
+
 `onnxruntime` is only the inference engine. It does not include a YOLO model or
 trained weights. The exported `models/yolo-small.onnx` file is the model artifact
 that the backend loads.
@@ -113,6 +124,8 @@ Optional runtimes appear in the model list only when their dependencies and
 local files are available:
 
 - YOLO Small ONNX CPU: `backend/models/yolo-small.onnx` + `onnxruntime`
+- YOLO11 Large ONNX CPU: `backend/models/yolo11l.onnx` + `onnxruntime`
+- YOLO11 X ONNX CPU: `backend/models/yolo11x.onnx` + `onnxruntime`
 - ONNX Runtime CoreML EP: `onnxruntime` with `CoreMLExecutionProvider`
 
 Camera frames are sent to the backend for inference and are not saved to disk.
