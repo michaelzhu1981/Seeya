@@ -157,6 +157,7 @@ textarea {
 .settings-wrap {
   position: relative;
   align-self: end;
+  width: max-content;
   margin-bottom: 5px;
 }
 
