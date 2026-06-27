@@ -220,7 +220,7 @@ class VisionEventStore:
             )
             return VisionPersistenceResult(event_id=event_id, duplicate_count=0, deduplicated=False)
 
-    def list_events(self, start_at: datetime | None, end_at: datetime | None, limit: int) -> list[dict]:
+    def list_events(self, start_at: datetime | None, end_at: datetime | None, keyword: str | None, limit: int) -> list[dict]:
         self.cleanup_expired()
         limited = max(1, min(limit, 500))
         clauses = ["expires_at > ?"]
@@ -231,6 +231,20 @@ class VisionEventStore:
         if end_at is not None:
             clauses.append("created_at <= ?")
             params.append(end_at.isoformat())
+        normalized_keyword = (keyword or "").strip()
+        if normalized_keyword:
+            keyword_pattern = f"%{escape_like_term(normalized_keyword)}%"
+            clauses.append(
+                """
+                (
+                    message LIKE ? ESCAPE '\\'
+                    OR summary LIKE ? ESCAPE '\\'
+                    OR model_id LIKE ? ESCAPE '\\'
+                    OR event_type LIKE ? ESCAPE '\\'
+                )
+                """
+            )
+            params.extend([keyword_pattern, keyword_pattern, keyword_pattern, keyword_pattern])
         params.append(limited)
         with self.connect() as connection:
             rows = connection.execute(
@@ -330,6 +344,10 @@ def normalize_message(message: str) -> str:
     normalized = re.sub(r"frame\s*\d+|帧编号[:：]?\s*\d+", "", normalized, flags=re.IGNORECASE)
     normalized = re.sub(r"[^\w\u4e00-\u9fff]+", "", normalized)
     return normalized
+
+
+def escape_like_term(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def summarize_message(message: str) -> str:

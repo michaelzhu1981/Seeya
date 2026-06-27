@@ -173,6 +173,7 @@ async def vision_analyze(payload: VisionAnalyzeRequest) -> VisionAnalyzeResponse
 async def vision_events(
     startAt: str | None = None,
     endAt: str | None = None,
+    keyword: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
 ) -> VisionEventsResponse:
     return VisionEventsResponse(
@@ -181,6 +182,7 @@ async def vision_events(
             for event in event_store.list_events(
                 start_at=parse_optional_datetime(startAt),
                 end_at=parse_optional_datetime(endAt),
+                keyword=keyword,
                 limit=limit,
             )
         ]

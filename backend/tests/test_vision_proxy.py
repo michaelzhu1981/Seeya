@@ -233,6 +233,47 @@ def test_vision_event_screenshot_returns_saved_file(monkeypatch, tmp_path) -> No
     assert len(screenshot.content) > 0
 
 
+def test_vision_events_filters_by_keyword(monkeypatch, tmp_path) -> None:
+    class KeywordClient(FakeAsyncClient):
+        messages = ["门口有一名人员停留。", "走廊无人异常。"]
+
+        async def post(self, url: str, json: dict) -> FakeResponse:
+            message = self.messages.pop(0)
+            return FakeResponse(200, {"choices": [{"message": {"content": message}}]})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", KeywordClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+    image_data = make_image_data()
+
+    for frame_id in (1, 2):
+        response = client.post(
+            "/vision/analyze",
+            json={
+                "baseUrl": "http://127.0.0.1:1234/v1",
+                "modelId": "qwen/qwen3-v1-4b",
+                "imageData": image_data,
+                "eventType": "new_person",
+                "frameId": frame_id,
+                "detections": [
+                    {
+                        "label": "person",
+                        "confidence": 0.9,
+                        "box": {"x": 10 * frame_id, "y": 20, "width": 30, "height": 40},
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200
+
+    events_response = client.get("/vision/events", params={"keyword": "门口"})
+
+    assert events_response.status_code == 200
+    events = events_response.json()["events"]
+    assert len(events) == 1
+    assert "门口" in events[0]["message"]
+
+
 def make_image_data() -> str:
     image = Image.new("RGB", (96, 64), color=(32, 64, 96))
     buffer = io.BytesIO()

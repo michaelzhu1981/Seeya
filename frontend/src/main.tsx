@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Camera, CircleStop, FileText, History, Image, Play, RefreshCw, Settings, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, Camera, CircleStop, FileText, Image, Play, RefreshCw, Search, Settings, Wifi, WifiOff, X } from "lucide-react";
 import type {
   Detection,
   DetectResponse,
@@ -168,6 +168,8 @@ const copy = {
     historyRecords: "History records",
     historyStart: "Start",
     historyEnd: "End",
+    historyKeyword: "Keyword",
+    historyKeywordPlaceholder: "Message, model, or event",
     viewHistory: "View history",
     loadingHistory: "Loading history",
     historyDialogTitle: "Vision history",
@@ -263,6 +265,8 @@ const copy = {
     historyRecords: "历史记录",
     historyStart: "开始时间",
     historyEnd: "结束时间",
+    historyKeyword: "关键字",
+    historyKeywordPlaceholder: "消息、模型或事件",
     viewHistory: "查看历史记录",
     loadingHistory: "加载历史中",
     historyDialogTitle: "图像识别历史",
@@ -333,22 +337,33 @@ function createSessionId(): string {
   return window.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function toDateInputValue(date: Date): string {
+function toDateTimeInputValue(date: Date): string {
   const offsetMs = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 10);
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
-function dateInputToIso(value: string, boundary: "start" | "end"): string {
-  const suffix = boundary === "start" ? "T00:00:00" : "T23:59:59.999";
-  return new Date(`${value}${suffix}`).toISOString();
+function dateTimeInputToIso(value: string): string | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function dateTimeInputToDateInputValue(value: string): string {
+  return value.slice(0, 10);
+}
+
+function dateInputToDateTimeInputValue(value: string, boundary: "start" | "end"): string {
+  return value ? `${value}${boundary === "start" ? "T00:00" : "T23:59"}` : "";
 }
 
 function readDefaultHistoryRange(): { start: string; end: string } {
   const end = new Date();
   const start = new Date(end.getTime() - 48 * 60 * 60 * 1000);
   return {
-    start: toDateInputValue(start),
-    end: toDateInputValue(end),
+    start: toDateTimeInputValue(start),
+    end: toDateTimeInputValue(end),
   };
 }
 
@@ -386,6 +401,7 @@ function App() {
   const [visionMessages, setVisionMessages] = React.useState<VisionMessage[]>([]);
   const [selectedVisionMessageId, setSelectedVisionMessageId] = React.useState("");
   const [historyRange, setHistoryRange] = React.useState(readDefaultHistoryRange);
+  const [historyKeyword, setHistoryKeyword] = React.useState("");
   const [historyDialogOpen, setHistoryDialogOpen] = React.useState(false);
   const [historyEvents, setHistoryEvents] = React.useState<VisionEventRecord[]>([]);
   const [selectedHistoryEventId, setSelectedHistoryEventId] = React.useState("");
@@ -579,6 +595,10 @@ function App() {
     setHistoryRange((current) => ({ ...current, [key]: value }));
   }, []);
 
+  const updateHistoryDateRange = React.useCallback((key: "start" | "end", value: string) => {
+    setHistoryRange((current) => ({ ...current, [key]: dateInputToDateTimeInputValue(value, key) }));
+  }, []);
+
   const fetchHistoryEvents = React.useCallback(async () => {
     setHistoryDialogOpen(true);
     setIsLoadingHistory(true);
@@ -591,11 +611,19 @@ function App() {
       return "";
     });
     try {
-      const params = new URLSearchParams({
-        startAt: dateInputToIso(historyRange.start, "start"),
-        endAt: dateInputToIso(historyRange.end, "end"),
-        limit: "100",
-      });
+      const params = new URLSearchParams({ limit: "100" });
+      const startAt = dateTimeInputToIso(historyRange.start);
+      const endAt = dateTimeInputToIso(historyRange.end);
+      if (startAt) {
+        params.set("startAt", startAt);
+      }
+      if (endAt) {
+        params.set("endAt", endAt);
+      }
+      const trimmedKeyword = historyKeyword.trim();
+      if (trimmedKeyword) {
+        params.set("keyword", trimmedKeyword);
+      }
       const response = await fetch(`${API_BASE_URL}/vision/events?${params.toString()}`);
       if (!response.ok) {
         throw new Error(await readApiError(response));
@@ -610,7 +638,7 @@ function App() {
     } finally {
       setIsLoadingHistory(false);
     }
-  }, [historyRange.end, historyRange.start]);
+  }, [historyKeyword, historyRange.end, historyRange.start]);
 
   const closeHistoryDialog = React.useCallback(() => {
     setHistoryDialogOpen(false);
@@ -1210,20 +1238,20 @@ function App() {
                 <span>{t.historyStart}</span>
                 <input
                   type="date"
-                  value={historyRange.start}
-                  onChange={(event) => updateHistoryRange("start", event.target.value)}
+                  value={dateTimeInputToDateInputValue(historyRange.start)}
+                  onChange={(event) => updateHistoryDateRange("start", event.target.value)}
                 />
               </label>
               <label className="stacked-control">
                 <span>{t.historyEnd}</span>
                 <input
                   type="date"
-                  value={historyRange.end}
-                  onChange={(event) => updateHistoryRange("end", event.target.value)}
+                  value={dateTimeInputToDateInputValue(historyRange.end)}
+                  onChange={(event) => updateHistoryDateRange("end", event.target.value)}
                 />
               </label>
               <button className="secondary-button" type="button" onClick={fetchHistoryEvents} disabled={isLoadingHistory}>
-                <History size={16} />
+                <Search size={16} />
                 {isLoadingHistory ? t.loadingHistory : t.viewHistory}
               </button>
             </div>
@@ -1298,6 +1326,42 @@ function App() {
               </div>
               <button className="icon-button" type="button" aria-label={t.close} onClick={closeHistoryDialog}>
                 <X size={18} />
+              </button>
+            </div>
+            <div className="history-dialog-filters">
+              <label className="stacked-control">
+                <span>{t.historyStart}</span>
+                <input
+                  type="datetime-local"
+                  value={historyRange.start}
+                  onChange={(event) => updateHistoryRange("start", event.target.value)}
+                />
+              </label>
+              <label className="stacked-control">
+                <span>{t.historyEnd}</span>
+                <input
+                  type="datetime-local"
+                  value={historyRange.end}
+                  onChange={(event) => updateHistoryRange("end", event.target.value)}
+                />
+              </label>
+              <label className="stacked-control">
+                <span>{t.historyKeyword}</span>
+                <input
+                  type="search"
+                  value={historyKeyword}
+                  placeholder={t.historyKeywordPlaceholder}
+                  onChange={(event) => setHistoryKeyword(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void fetchHistoryEvents();
+                    }
+                  }}
+                />
+              </label>
+              <button className="secondary-button" type="button" onClick={fetchHistoryEvents} disabled={isLoadingHistory}>
+                <Search size={16} />
+                {isLoadingHistory ? t.loadingHistory : t.viewHistory}
               </button>
             </div>
             <div className="history-dialog-body">
