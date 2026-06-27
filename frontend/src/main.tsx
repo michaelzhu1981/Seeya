@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { Activity, Camera, CircleStop, FileText, Image, Play, RefreshCw, Search, Settings, Wifi, WifiOff, X } from "lucide-react";
+import { Activity, Camera, CircleStop, FileText, Image, Play, RefreshCw, Search, Settings, Trash2, Wifi, WifiOff, X } from "lucide-react";
 import type {
   AppSettings,
   Detection,
@@ -117,6 +117,11 @@ const copy = {
     appearance: "Appearance",
     historyRetentionDays: "History data retention",
     historyRetentionDaysHelp: "How many days database records and saved screenshots are kept before automatic cleanup.",
+    clearAllRecords: "Clear all records",
+    clearAllRecordsHelp: "Delete all vision history records and saved screenshots from the database.",
+    clearAllRecordsConfirm: "Clear all history records and saved screenshots? This cannot be undone.",
+    clearAllRecordsDone: "All history records and screenshots were cleared.",
+    clearingRecords: "Clearing",
     days: "days",
     system: "System",
     dark: "Dark",
@@ -218,6 +223,11 @@ const copy = {
     appearance: "外观",
     historyRetentionDays: "历史数据保存时间",
     historyRetentionDaysHelp: "数据库记录和已保存图片自动清理前保留的天数。",
+    clearAllRecords: "清除所有记录",
+    clearAllRecordsHelp: "从数据库中删除所有图像识别历史记录和已保存截图。",
+    clearAllRecordsConfirm: "确定要清除所有历史记录和已保存截图吗？此操作无法撤销。",
+    clearAllRecordsDone: "已清除所有历史记录和截图。",
+    clearingRecords: "清除中",
     days: "天",
     system: "系统",
     dark: "深色",
@@ -427,6 +437,7 @@ function App() {
   const [historyEvents, setHistoryEvents] = React.useState<VisionEventRecord[]>([]);
   const [selectedHistoryEventId, setSelectedHistoryEventId] = React.useState("");
   const [isLoadingHistory, setIsLoadingHistory] = React.useState(false);
+  const [isClearingRecords, setIsClearingRecords] = React.useState(false);
   const [historyError, setHistoryError] = React.useState("");
   const [historyImageUrl, setHistoryImageUrl] = React.useState("");
   const [isLoadingHistoryImage, setIsLoadingHistoryImage] = React.useState(false);
@@ -443,6 +454,7 @@ function App() {
   const [inferenceMs, setInferenceMs] = React.useState(0);
   const [latencyMs, setLatencyMs] = React.useState(0);
   const [error, setError] = React.useState("");
+  const [statusMessage, setStatusMessage] = React.useState("");
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [language, setLanguage] = React.useState<Language>(DEFAULT_APP_SETTINGS.language);
   const [appearance, setAppearance] = React.useState<Appearance>(DEFAULT_APP_SETTINGS.appearance);
@@ -724,6 +736,38 @@ function App() {
       return "";
     });
   }, []);
+
+  const handleClearAllRecords = React.useCallback(async () => {
+    if (!window.confirm(t.clearAllRecordsConfirm)) {
+      return;
+    }
+    setIsClearingRecords(true);
+    setError("");
+    setStatusMessage("");
+    setHistoryError("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/vision/events`, { method: "DELETE" });
+      if (!response.ok) {
+        throw new Error(await readApiError(response));
+      }
+      setHistoryEvents([]);
+      setSelectedHistoryEventId("");
+      setVisionMessages([]);
+      setSelectedVisionMessageId("");
+      setHistoryImageError("");
+      setHistoryImageUrl((current) => {
+        if (current) {
+          URL.revokeObjectURL(current);
+        }
+        return "";
+      });
+      setStatusMessage(t.clearAllRecordsDone);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to clear records");
+    } finally {
+      setIsClearingRecords(false);
+    }
+  }, [t.clearAllRecordsConfirm, t.clearAllRecordsDone]);
 
   const loadHistoryImage = React.useCallback(async () => {
     if (!selectedHistoryEvent?.hasScreenshot) {
@@ -1156,6 +1200,13 @@ function App() {
                   <strong>{t.days}</strong>
                 </div>
               </label>
+              <div className="settings-danger" title={t.clearAllRecordsHelp}>
+                <span>{t.clearAllRecords}</span>
+                <button className="secondary-button danger-button" type="button" onClick={handleClearAllRecords} disabled={isClearingRecords}>
+                  <Trash2 size={16} />
+                  {isClearingRecords ? t.clearingRecords : t.clearAllRecords}
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -1315,6 +1366,7 @@ function App() {
           </div>
 
           {error ? <div className="error-box">{error}</div> : null}
+          {statusMessage ? <div className="status-box">{statusMessage}</div> : null}
 
           <div className="detections">
             <div className="detections-header">

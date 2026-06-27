@@ -214,6 +214,33 @@ textarea {
   font-size: 13px;
 }
 
+.settings-danger {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid #2a3944;
+}
+
+.settings-danger span {
+  color: #ffb0b0;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.danger-button {
+  width: 100%;
+  color: #ffd6d6;
+  border-color: #7a343a;
+  background: #2a1418;
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: #b3454e;
+  background: #35181e;
+}
+
 .workspace {
   flex: 1;
   min-height: 0;
@@ -336,7 +363,8 @@ video,
 .threshold,
 .vision-settings,
 .status-grid,
-.error-box {
+.error-box,
+.status-box {
   grid-column: 1 / -1;
 }
 
@@ -641,6 +669,16 @@ video,
   color: #ffb0b0;
   background: #2a1418;
   border: 1px solid #6f3338;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.status-box {
+  padding: 12px;
+  border-radius: 5px;
+  color: #9df4c4;
+  background: #10271c;
+  border: 1px solid #2d6f49;
   font-size: 13px;
   line-height: 1.35;
 }
@@ -1085,6 +1123,20 @@ video,
   color: #16242e;
 }
 
+.app-shell.theme-light .settings-danger {
+  border-color: #dce6ed;
+}
+
+.app-shell.theme-light .settings-danger span {
+  color: #b4232e;
+}
+
+.app-shell.theme-light .danger-button {
+  color: #b4232e;
+  border-color: #efb5bb;
+  background: #fff2f3;
+}
+
 .app-shell.theme-light .viewer,
 .app-shell.theme-light .side-panel {
   border-color: #cbd8e1;
@@ -1113,9 +1165,16 @@ video,
 .app-shell.theme-light .threshold,
 .app-shell.theme-light .number-control,
 .app-shell.theme-light .history-section,
-.app-shell.theme-light .detection-table {
+.app-shell.theme-light .detection-table,
+.app-shell.theme-light .status-box {
   border-color: #dce6ed;
   background: #f6fafc;
+}
+
+.app-shell.theme-light .status-box {
+  color: #08764f;
+  border-color: #9fdcbe;
+  background: #edfdf6;
 }
 
 .app-shell.theme-light .detection-table-head {
@@ -1288,6 +1347,7 @@ video,
   .vision-settings,
   .status-grid,
   .error-box,
+  .status-box,
   .detections,
   .history-section,
   .vision-messages,

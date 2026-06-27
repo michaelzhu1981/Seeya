@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import uuid
 
@@ -398,6 +399,14 @@ class VisionEventStore:
                 (event_id, datetime.now(UTC).isoformat()),
             ).fetchone()
         return event_row_to_dict(row) if row else None
+
+    def clear_all(self) -> tuple[int, int]:
+        screenshot_count = sum(1 for path in self.screenshot_dir.rglob("*") if path.is_file())
+        with self.connect() as connection:
+            deleted_events = connection.execute("DELETE FROM vision_events").rowcount
+        shutil.rmtree(self.screenshot_dir, ignore_errors=True)
+        self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+        return max(deleted_events, 0), screenshot_count
 
     def screenshot_file(self, event_id: str) -> tuple[Path, str] | None:
         event = self.get_event(event_id)

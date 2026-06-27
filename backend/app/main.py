@@ -13,6 +13,7 @@ import httpx
 from app.model_registry import ModelRegistry
 from app.schemas import (
     AppSettings,
+    ClearVisionEventsResponse,
     DetectFrameRequest,
     DetectFrameResponse,
     HealthResponse,
@@ -222,6 +223,12 @@ async def vision_events(
             )
         ]
     )
+
+
+@app.delete("/vision/events", response_model=ClearVisionEventsResponse)
+async def clear_vision_events() -> ClearVisionEventsResponse:
+    deleted_events, deleted_screenshots = event_store.clear_all()
+    return ClearVisionEventsResponse(deletedEvents=deleted_events, deletedScreenshots=deleted_screenshots)
 
 
 @app.get("/vision/events/{event_id}", response_model=VisionEventRecord)

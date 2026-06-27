@@ -141,3 +141,8 @@ class VisionEventRecord(BaseModel):
 
 class VisionEventsResponse(BaseModel):
     events: list[VisionEventRecord]
+
+
+class ClearVisionEventsResponse(BaseModel):
+    deletedEvents: int
+    deletedScreenshots: int

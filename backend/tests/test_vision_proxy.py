@@ -464,6 +464,41 @@ def test_vision_event_screenshot_returns_saved_file(monkeypatch, tmp_path) -> No
     assert len(screenshot.content) > 0
 
 
+def test_clear_vision_events_removes_records_and_screenshots(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    store = VisionEventStore(tmp_path)
+    monkeypatch.setattr(main, "event_store", store)
+    client = TestClient(main.app)
+
+    response = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data(),
+            "eventType": "person_moved",
+            "frameId": 4,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.92,
+                    "box": {"x": 40, "y": 40, "width": 40, "height": 60},
+                }
+            ],
+        },
+    )
+    event_id = response.json()["eventId"]
+    assert client.get(f"/vision/events/{event_id}/screenshot").status_code == 200
+
+    clear_response = client.delete("/vision/events")
+
+    assert clear_response.status_code == 200
+    assert clear_response.json() == {"deletedEvents": 1, "deletedScreenshots": 1}
+    assert client.get("/vision/events").json()["events"] == []
+    assert client.get(f"/vision/events/{event_id}/screenshot").status_code == 404
+    assert not any(store.screenshot_dir.rglob("*"))
+
+
 def test_vision_analyze_uses_retention_days_for_event_expiry(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
