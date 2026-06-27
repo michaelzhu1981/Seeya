@@ -49,7 +49,7 @@ class DetectFrameRequest(BaseModel):
     width: int = Field(gt=0)
     height: int = Field(gt=0)
     modelId: str | None = None
-    confidenceThreshold: float = Field(default=0.45, ge=0, le=1)
+    confidenceThreshold: float = Field(default=0.55, ge=0, le=1)
 
 
 class DetectFrameResponse(BaseModel):

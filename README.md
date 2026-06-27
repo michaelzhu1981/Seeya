@@ -34,15 +34,14 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8010
 
 ## YOLO Model Setup
 
-The recommended detector is `yolo-nano-onnx-cpu`. When the ONNX model file and
-runtime are available, the backend selects it by default and returns real YOLO
-detections. If either dependency is missing, the backend falls back to
+The recommended high-accuracy detector is `yolo-small-onnx-cpu` with a 640 px
+input. If that model is not available, the backend falls back to
 `demo-local-detector` so the camera and WebSocket loop remain testable.
 
-The ONNX CPU model needs:
+The ONNX CPU models need:
 
 - the ONNX Runtime package installed in the backend virtual environment
-- a YOLO ONNX model file at `backend/models/yolo-nano.onnx`
+- a YOLO ONNX model file at `backend/models/yolo-small.onnx` for the recommended high-accuracy path
 
 Install the runtime and export tools inside the backend virtual environment:
 
@@ -52,17 +51,17 @@ source .venv/bin/activate
 python -m pip install onnxruntime ultralytics
 ```
 
-Export the Ultralytics nano YOLO model to ONNX and move it to the path expected
+Export the recommended small YOLO model to ONNX and move it to the path expected
 by the backend:
 
 ```bash
 mkdir -p models
-yolo export model=yolov8n.pt format=onnx imgsz=416
-mv yolov8n.onnx models/yolo-nano.onnx
+yolo export model=yolov8s.pt format=onnx imgsz=640
+mv yolov8s.onnx models/yolo-small.onnx
 ```
 
 `onnxruntime` is only the inference engine. It does not include a YOLO model or
-trained weights. The exported `models/yolo-nano.onnx` file is the model artifact
+trained weights. The exported `models/yolo-small.onnx` file is the model artifact
 that the backend loads.
 
 ## One-command Development
@@ -84,8 +83,8 @@ The backend exposes:
 - `POST /models/select`
 - `WS /ws/detect`
 
-With `backend/models/yolo-nano.onnx` and `onnxruntime` present, the selected
-model is `yolo-nano-onnx-cpu`. Without them, the selected model is
+With `backend/models/yolo-small.onnx` and `onnxruntime` present, the selected
+model is `yolo-small-onnx-cpu`. Without it, the selected model is
 `demo-local-detector`.
 
 ## Frontend Setup
@@ -113,8 +112,7 @@ development environment.
 Optional runtimes appear in the model list only when their dependencies and
 local files are available:
 
-- YOLO Nano ONNX CPU: `backend/models/yolo-nano.onnx` + `onnxruntime`
-- PyTorch MPS: `torch`, `ultralytics`, and MPS availability
+- YOLO Small ONNX CPU: `backend/models/yolo-small.onnx` + `onnxruntime`
 - ONNX Runtime CoreML EP: `onnxruntime` with `CoreMLExecutionProvider`
 
 Camera frames are sent to the backend for inference and are not saved to disk.
@@ -143,3 +141,7 @@ cd backend
 source .venv/bin/activate
 python scripts/benchmark.py
 ```
+
+## License
+
+This project is licensed under the MIT License.

@@ -6,11 +6,22 @@ from pathlib import Path
 from app.detectors.base import Detector
 from app.detectors.demo_detector import DemoDetector
 from app.detectors.onnx_detector import OnnxDetector
-from app.detectors.torch_detector import TorchMpsDetector
 from app.schemas import ModelInfo
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "models"
+
+
+ONNX_MODEL_SPECS = [
+    {
+        "id": "yolo-small-onnx-cpu",
+        "name": "YOLO Small ONNX CPU",
+        "runtime": "onnx-cpu",
+        "size": "small",
+        "input_size": 640,
+        "path": MODELS_DIR / "yolo-small.onnx",
+    },
+]
 
 
 class ModelRegistry:
@@ -20,10 +31,7 @@ class ModelRegistry:
         self._detector_cache: dict[str, Detector] = {}
 
     def _discover_models(self) -> list[ModelInfo]:
-        onnx_path = MODELS_DIR / "yolo-nano.onnx"
         has_onnxruntime = importlib.util.find_spec("onnxruntime") is not None
-        has_torch = importlib.util.find_spec("torch") is not None
-        has_ultralytics = importlib.util.find_spec("ultralytics") is not None
         coreml_available = False
         coreml_error: str | None = None
         if has_onnxruntime:
@@ -35,26 +43,53 @@ class ModelRegistry:
                 coreml_available = False
                 coreml_error = str(exc)
 
-        real_onnx_available = onnx_path.exists() and has_onnxruntime
-        torch_mps_available = self._torch_mps_available(has_torch, has_ultralytics)
-        coreml_model_available, coreml_startup_error = self._coreml_model_available(
-            onnx_path,
-            has_onnxruntime,
-            coreml_available,
-        )
-        coreml_error = coreml_error or coreml_startup_error
+        recommended_onnx_id = self._recommended_onnx_id(has_onnxruntime)
+        real_onnx_available = recommended_onnx_id is not None
+        models: list[ModelInfo] = []
 
-        return [
-            ModelInfo(
-                id="yolo-nano-onnx-cpu",
-                name="YOLO Nano ONNX CPU",
-                runtime="onnx-cpu",
-                size="nano",
-                inputSize=416,
-                available=real_onnx_available,
-                recommended=real_onnx_available,
-                unavailableReason=self._onnx_unavailable_reason(onnx_path, has_onnxruntime),
-            ),
+        for spec in ONNX_MODEL_SPECS:
+            model_path = spec["path"]
+            available = model_path.exists() and has_onnxruntime
+            models.append(
+                ModelInfo(
+                    id=spec["id"],
+                    name=spec["name"],
+                    runtime=spec["runtime"],
+                    size=spec["size"],
+                    inputSize=spec["input_size"],
+                    available=available,
+                    recommended=spec["id"] == recommended_onnx_id,
+                    unavailableReason=self._onnx_unavailable_reason(model_path, has_onnxruntime),
+                ),
+            )
+
+        for spec in ONNX_MODEL_SPECS:
+            model_path = spec["path"]
+            coreml_model_available, coreml_startup_error = self._coreml_model_available(
+                model_path,
+                has_onnxruntime,
+                coreml_available,
+            )
+            model_coreml_error = coreml_error or coreml_startup_error
+            models.append(
+                ModelInfo(
+                    id=spec["id"].replace("-cpu", "-coreml"),
+                    name=f"{spec['name'].removesuffix(' CPU')} CoreML EP",
+                    runtime="onnx-coreml",
+                    size=spec["size"],
+                    inputSize=spec["input_size"],
+                    available=coreml_model_available,
+                    recommended=False,
+                    unavailableReason=self._coreml_unavailable_reason(
+                        model_path,
+                        has_onnxruntime,
+                        coreml_available,
+                        model_coreml_error,
+                    ),
+                )
+            )
+
+        models.append(
             ModelInfo(
                 id="demo-local-detector",
                 name="Demo Local Detector",
@@ -64,33 +99,18 @@ class ModelRegistry:
                 available=True,
                 recommended=not real_onnx_available,
                 unavailableReason=None,
-            ),
-            ModelInfo(
-                id="yolo-nano-torch-mps",
-                name="YOLO Nano PyTorch MPS",
-                runtime="torch-mps",
-                size="nano",
-                inputSize=416,
-                available=torch_mps_available,
-                recommended=False,
-                unavailableReason=self._torch_unavailable_reason(has_torch, has_ultralytics, torch_mps_available),
-            ),
-            ModelInfo(
-                id="yolo-nano-onnx-coreml",
-                name="YOLO Nano ONNX CoreML EP",
-                runtime="onnx-coreml",
-                size="nano",
-                inputSize=416,
-                available=coreml_model_available,
-                recommended=False,
-                unavailableReason=self._coreml_unavailable_reason(
-                    onnx_path,
-                    has_onnxruntime,
-                    coreml_available,
-                    coreml_error,
-                ),
-            ),
-        ]
+            )
+        )
+        return models
+
+    @staticmethod
+    def _recommended_onnx_id(has_onnxruntime: bool) -> str | None:
+        if not has_onnxruntime:
+            return None
+        for spec in ONNX_MODEL_SPECS:
+            if spec["path"].exists():
+                return spec["id"]
+        return None
 
     def _recommended_model(self) -> ModelInfo:
         for model in self.models:
@@ -108,27 +128,6 @@ class ModelRegistry:
         if not has_onnxruntime:
             return "onnxruntime is not installed"
         return None
-
-    @staticmethod
-    def _torch_mps_available(has_torch: bool, has_ultralytics: bool) -> bool:
-        if not (has_torch and has_ultralytics):
-            return False
-        try:
-            import torch
-
-            return bool(torch.backends.mps.is_available())
-        except Exception:
-            return False
-
-    @staticmethod
-    def _torch_unavailable_reason(has_torch: bool, has_ultralytics: bool, available: bool) -> str | None:
-        if available:
-            return None
-        if not has_torch:
-            return "torch is not installed"
-        if not has_ultralytics:
-            return "ultralytics is not installed"
-        return "MPS is not available"
 
     @staticmethod
     def _coreml_model_available(
@@ -194,18 +193,31 @@ class ModelRegistry:
 
         if model.id == "demo-local-detector":
             detector: Detector = DemoDetector()
-        elif model.id == "yolo-nano-onnx-cpu":
-            detector = OnnxDetector(MODELS_DIR / "yolo-nano.onnx")
-        elif model.id == "yolo-nano-torch-mps":
-            detector = TorchMpsDetector()
-        elif model.id == "yolo-nano-onnx-coreml":
+        elif model.id in {spec["id"] for spec in ONNX_MODEL_SPECS}:
+            spec = self._onnx_spec_for(model.id)
             detector = OnnxDetector(
-                MODELS_DIR / "yolo-nano.onnx",
-                model_id="yolo-nano-onnx-coreml",
+                spec["path"],
+                model_id=spec["id"],
+                input_size=spec["input_size"],
+            )
+        elif model.id in {spec["id"].replace("-cpu", "-coreml") for spec in ONNX_MODEL_SPECS}:
+            cpu_model_id = model.id.replace("-coreml", "-cpu")
+            spec = self._onnx_spec_for(cpu_model_id)
+            detector = OnnxDetector(
+                spec["path"],
+                model_id=model.id,
                 providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
+                input_size=spec["input_size"],
             )
         else:
             raise KeyError(model.id)
 
         self._detector_cache[model.id] = detector
         return detector
+
+    @staticmethod
+    def _onnx_spec_for(model_id: str) -> dict[str, object]:
+        for spec in ONNX_MODEL_SPECS:
+            if spec["id"] == model_id:
+                return spec
+        raise KeyError(model_id)

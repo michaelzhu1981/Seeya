@@ -108,11 +108,11 @@ UI 行为：
 
 ```json
 {
-  "id": "yolo-nano-onnx-cpu",
-  "name": "YOLO Nano ONNX CPU",
+  "id": "yolo-small-onnx-cpu",
+  "name": "YOLO Small ONNX CPU",
   "runtime": "onnx-cpu",
-  "size": "nano",
-  "inputSize": 416,
+  "size": "small",
+  "inputSize": 640,
   "available": true,
   "recommended": true,
   "unavailableReason": null
@@ -158,17 +158,17 @@ UI 行为：
 {
   "models": [
     {
-      "id": "yolo-nano-onnx-cpu",
-      "name": "YOLO Nano ONNX CPU",
+      "id": "yolo-small-onnx-cpu",
+      "name": "YOLO Small ONNX CPU",
       "runtime": "onnx-cpu",
-      "size": "nano",
-      "inputSize": 416,
+      "size": "small",
+      "inputSize": 640,
       "available": true,
       "recommended": true,
       "unavailableReason": null
     }
   ],
-  "selectedModelId": "yolo-nano-onnx-cpu"
+  "selectedModelId": "yolo-small-onnx-cpu"
 }
 ```
 
@@ -180,7 +180,7 @@ UI 行为：
 
 ```json
 {
-  "modelId": "yolo-nano-onnx-cpu"
+  "modelId": "yolo-small-onnx-cpu"
 }
 ```
 
@@ -199,7 +199,7 @@ UI 行为：
 ```json
 {
   "frameId": 123,
-  "modelId": "yolo-nano-onnx-cpu",
+  "modelId": "yolo-small-onnx-cpu",
   "inferenceMs": 42,
   "detections": [
     {
@@ -220,8 +220,8 @@ UI 行为：
 
 默认模型：
 
-- `YOLO Nano ONNX CPU`
-- 输入尺寸优先使用 `320` 或 `416`
+- `YOLO Small ONNX CPU`
+- 输入尺寸优先使用 `640`
 - 默认抽帧 `5 FPS`
 
 选择 ONNX CPU 作为默认路径的原因：
@@ -230,12 +230,6 @@ UI 行为：
 - 安装和运行稳定。
 - 适合第一阶段 MVP。
 - 对通用物体识别和低帧率实时标签足够可用。
-
-MPS 支持策略：
-
-- Ultralytics 支持 Apple Silicon 的 `device="mps"`。
-- 第一阶段作为可选模型/runtime 出现在模型列表中。
-- 只有依赖可用并通过启动检查时才允许选择。
 
 CoreML EP 支持策略：
 
@@ -252,7 +246,7 @@ MLX 策略：
 benchmark 要求：
 
 - 增加 `scripts/benchmark.py`。
-- 对比 ONNX Runtime CPU、PyTorch MPS、可选 ONNX Runtime CoreML EP。
+- 对比 ONNX Runtime CPU 和可选 ONNX Runtime CoreML EP。
 - 输出模型 ID、runtime、输入尺寸、平均推理耗时、P95 推理耗时和估算 FPS。
 
 ## 10. 参考项目

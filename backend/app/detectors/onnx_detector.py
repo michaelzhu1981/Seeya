@@ -109,13 +109,13 @@ class LetterboxInfo:
 
 
 class OnnxDetector(Detector):
-    model_id = "yolo-nano-onnx-cpu"
+    model_id = "yolo-small-onnx-cpu"
 
     def __init__(
         self,
         model_path: Path,
         *,
-        model_id: str = "yolo-nano-onnx-cpu",
+        model_id: str = "yolo-small-onnx-cpu",
         providers: list[str] | None = None,
         input_size: int = 416,
         max_detections: int = 100,

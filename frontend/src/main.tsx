@@ -11,9 +11,24 @@ const LANGUAGE_STORAGE_KEY = "seeya.language";
 const APPEARANCE_STORAGE_KEY = "seeya.appearance";
 const TARGET_FPS = 5;
 const CAMERA_OFF_ID = "camera-off";
+const DEFAULT_CONFIDENCE_THRESHOLD = 0.55;
+const FRAME_JPEG_QUALITY = 0.88;
+const STABLE_CONFIRM_FRAMES = 2;
+const STABLE_MISS_TOLERANCE = 2;
+const STABLE_IOU_THRESHOLD = 0.35;
+const BOX_SMOOTHING_ALPHA = 0.65;
 
 type Language = "en" | "zh";
 type Appearance = "system" | "dark" | "light";
+type TrackedDetection = Detection & {
+  trackId: number;
+  hits: number;
+  lastSeenFrame: number;
+};
+type DetectionTracker = {
+  nextTrackId: number;
+  tracks: TrackedDetection[];
+};
 
 const copy = {
   en: {
@@ -131,6 +146,13 @@ function normalizeStatus(status: string): string {
   return status.toLowerCase().replace(/\s+/g, "-");
 }
 
+function resolveInitialModelId(models: ModelInfo[], savedModelId: string | null, backendSelectedModelId: string): string {
+  const recommendedModel = models.find((model) => model.available && model.recommended);
+  const savedModel = models.find((model) => model.id === savedModelId && model.available);
+
+  return savedModel?.id ?? recommendedModel?.id ?? backendSelectedModelId;
+}
+
 function App() {
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const overlayRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -138,6 +160,7 @@ function App() {
   const socketRef = React.useRef<WebSocket | null>(null);
   const latestFrameRef = React.useRef(0);
   const sentAtRef = React.useRef(new Map<number, number>());
+  const detectionTrackerRef = React.useRef<DetectionTracker>({ nextTrackId: 1, tracks: [] });
 
   const [models, setModels] = React.useState<ModelInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = React.useState("");
@@ -147,7 +170,7 @@ function App() {
   const [connectionState, setConnectionState] = React.useState<"idle" | "connected" | "error">("idle");
   const [modelStatus, setModelStatus] = React.useState("Not loaded");
   const [isRunning, setIsRunning] = React.useState(false);
-  const [threshold, setThreshold] = React.useState(0.45);
+  const [threshold, setThreshold] = React.useState(DEFAULT_CONFIDENCE_THRESHOLD);
   const [detections, setDetections] = React.useState<Detection[]>([]);
   const [fps, setFps] = React.useState(0);
   const [inferenceMs, setInferenceMs] = React.useState(0);
@@ -210,9 +233,10 @@ function App() {
     }
     const data = (await response.json()) as { models: ModelInfo[]; selectedModelId: string };
     const savedModelId = window.localStorage.getItem(MODEL_STORAGE_KEY);
-    const savedModel = data.models.find((model) => model.id === savedModelId && model.available);
+    const initialModelId = resolveInitialModelId(data.models, savedModelId, data.selectedModelId);
     setModels(data.models);
-    setSelectedModelId(savedModel?.id ?? data.selectedModelId);
+    setSelectedModelId(initialModelId);
+    window.localStorage.setItem(MODEL_STORAGE_KEY, initialModelId);
     setModelStatus("Ready");
   }, []);
 
@@ -282,6 +306,7 @@ function App() {
     socketRef.current = null;
     setConnectionState("idle");
     setFps(0);
+    detectionTrackerRef.current = { nextTrackId: 1, tracks: [] };
   }, []);
 
   const handleCameraChange = React.useCallback(
@@ -351,7 +376,7 @@ function App() {
         sentAtRef.current.delete(data.frameId);
       }
       setInferenceMs(data.inferenceMs);
-      setDetections(data.detections);
+      setDetections(stabilizeDetections(data.detections, data.frameId, detectionTrackerRef.current));
     };
   }, [selectedModel, startCamera, t.selectModelError, t.unableStartCamera, t.websocketFailed]);
 
@@ -378,7 +403,7 @@ function App() {
       }
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       frameId += 1;
-      const imageData = canvas.toDataURL("image/jpeg", 0.72);
+      const imageData = canvas.toDataURL("image/jpeg", FRAME_JPEG_QUALITY);
       sentAtRef.current.set(frameId, performance.now());
       socket.send(
         JSON.stringify({
@@ -585,6 +610,79 @@ function App() {
       <canvas ref={captureRef} className="capture-canvas" />
     </main>
   );
+}
+
+function stabilizeDetections(
+  incomingDetections: Detection[],
+  frameId: number,
+  tracker: DetectionTracker,
+): Detection[] {
+  const matchedTrackIds = new Set<number>();
+  const sortedDetections = [...incomingDetections].sort((left, right) => right.confidence - left.confidence);
+
+  sortedDetections.forEach((detection) => {
+    let bestTrackIndex = -1;
+    let bestIou = 0;
+
+    tracker.tracks.forEach((track, index) => {
+      if (track.label !== detection.label || matchedTrackIds.has(track.trackId)) {
+        return;
+      }
+      const overlap = boxIou(track.box, detection.box);
+      if (overlap > bestIou) {
+        bestIou = overlap;
+        bestTrackIndex = index;
+      }
+    });
+
+    if (bestTrackIndex >= 0 && bestIou >= STABLE_IOU_THRESHOLD) {
+      const bestTrack = tracker.tracks[bestTrackIndex];
+      bestTrack.confidence = detection.confidence;
+      bestTrack.box = smoothBox(bestTrack.box, detection.box);
+      bestTrack.hits += 1;
+      bestTrack.lastSeenFrame = frameId;
+      matchedTrackIds.add(bestTrack.trackId);
+      return;
+    }
+
+    const track: TrackedDetection = {
+      ...detection,
+      trackId: tracker.nextTrackId,
+      hits: 1,
+      lastSeenFrame: frameId,
+    };
+    tracker.nextTrackId += 1;
+    tracker.tracks.push(track);
+    matchedTrackIds.add(track.trackId);
+  });
+
+  tracker.tracks = tracker.tracks.filter((track) => frameId - track.lastSeenFrame <= STABLE_MISS_TOLERANCE);
+  return tracker.tracks
+    .filter((track) => track.hits >= STABLE_CONFIRM_FRAMES || track.confidence >= 0.75)
+    .sort((left, right) => right.confidence - left.confidence)
+    .map(({ trackId: _trackId, hits: _hits, lastSeenFrame: _lastSeenFrame, ...detection }) => detection);
+}
+
+function smoothBox(previous: Detection["box"], next: Detection["box"]): Detection["box"] {
+  return {
+    x: previous.x * (1 - BOX_SMOOTHING_ALPHA) + next.x * BOX_SMOOTHING_ALPHA,
+    y: previous.y * (1 - BOX_SMOOTHING_ALPHA) + next.y * BOX_SMOOTHING_ALPHA,
+    width: previous.width * (1 - BOX_SMOOTHING_ALPHA) + next.width * BOX_SMOOTHING_ALPHA,
+    height: previous.height * (1 - BOX_SMOOTHING_ALPHA) + next.height * BOX_SMOOTHING_ALPHA,
+  };
+}
+
+function boxIou(left: Detection["box"], right: Detection["box"]): number {
+  const leftX2 = left.x + left.width;
+  const leftY2 = left.y + left.height;
+  const rightX2 = right.x + right.width;
+  const rightY2 = right.y + right.height;
+
+  const intersectionWidth = Math.max(0, Math.min(leftX2, rightX2) - Math.max(left.x, right.x));
+  const intersectionHeight = Math.max(0, Math.min(leftY2, rightY2) - Math.max(left.y, right.y));
+  const intersection = intersectionWidth * intersectionHeight;
+  const union = left.width * left.height + right.width * right.height - intersection;
+  return union > 0 ? intersection / union : 0;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
