@@ -662,7 +662,7 @@ function App() {
     setHistoryRange((current) => ({ ...current, [key]: dateInputToDateTimeInputValue(value, key) }));
   }, []);
 
-  const fetchHistoryEvents = React.useCallback(async () => {
+  const fetchHistoryEvents = React.useCallback(async (range = historyRange) => {
     setHistoryDialogOpen(true);
     setIsLoadingHistory(true);
     setHistoryError("");
@@ -675,8 +675,8 @@ function App() {
     });
     try {
       const params = new URLSearchParams({ limit: "100" });
-      const startAt = dateTimeInputToIso(historyRange.start);
-      const endAt = dateTimeInputToIso(historyRange.end);
+      const startAt = dateTimeInputToIso(range.start);
+      const endAt = dateTimeInputToIso(range.end);
       if (startAt) {
         params.set("startAt", startAt);
       }
@@ -702,6 +702,15 @@ function App() {
       setIsLoadingHistory(false);
     }
   }, [historyKeyword, historyRange.end, historyRange.start]);
+
+  const fetchHistoryEventsForDateRange = React.useCallback(() => {
+    const range = {
+      start: dateInputToDateTimeInputValue(dateTimeInputToDateInputValue(historyRange.start), "start"),
+      end: dateInputToDateTimeInputValue(dateTimeInputToDateInputValue(historyRange.end), "end"),
+    };
+    setHistoryRange(range);
+    void fetchHistoryEvents(range);
+  }, [fetchHistoryEvents, historyRange.end, historyRange.start]);
 
   const closeHistoryDialog = React.useCallback(() => {
     setHistoryDialogOpen(false);
@@ -1355,7 +1364,7 @@ function App() {
                   onChange={(event) => updateHistoryDateRange("end", event.target.value)}
                 />
               </label>
-              <button className="secondary-button" type="button" onClick={fetchHistoryEvents} disabled={isLoadingHistory}>
+              <button className="secondary-button" type="button" onClick={fetchHistoryEventsForDateRange} disabled={isLoadingHistory}>
                 <Search size={16} />
                 {isLoadingHistory ? t.loadingHistory : t.viewHistory}
               </button>
@@ -1464,7 +1473,7 @@ function App() {
                   }}
                 />
               </label>
-              <button className="secondary-button" type="button" onClick={fetchHistoryEvents} disabled={isLoadingHistory}>
+              <button className="secondary-button" type="button" onClick={() => void fetchHistoryEvents()} disabled={isLoadingHistory}>
                 <Search size={16} />
                 {isLoadingHistory ? t.loadingHistory : t.viewHistory}
               </button>
