@@ -25,6 +25,27 @@ BOX_CENTER_DISTANCE_RATIO = 0.15
 BOX_IOU_THRESHOLD = 0.35
 DEDUPLICATION_CANDIDATE_LIMIT = 10
 RISK_TERMS = ("风险", "危险", "摔倒", "跌倒", "火", "烟", "入侵", "异常", "求助", "受伤", "警告")
+CLOTHING_TERMS = (
+    "黑色",
+    "白色",
+    "红色",
+    "蓝色",
+    "绿色",
+    "黄色",
+    "灰色",
+    "上衣",
+    "外套",
+    "裤子",
+    "裙子",
+    "帽子",
+    "口罩",
+    "背包",
+    "手提包",
+)
+ACTION_TERMS = ("站立", "站着", "行走", "走动", "移动", "停留", "坐着", "坐下", "弯腰", "蹲下", "跑", "挥手")
+LOCATION_TERMS = ("门口", "走廊", "左侧", "右侧", "中间", "中央", "前方", "后方", "角落", "房间", "室内", "画面")
+TEXT_FEATURE_SIMILARITY_THRESHOLD = 0.6
+PERSON_BOX_AREA_RATIO_DELTA = 0.35
 
 
 @dataclass(frozen=True)
@@ -42,6 +63,13 @@ class VisionPersistenceResult:
     event_id: str | None
     duplicate_count: int
     deduplicated: bool
+
+
+@dataclass(frozen=True)
+class VisionDuplicateResult:
+    event_id: str
+    duplicate_count: int
+    message: str
 
 
 class VisionEventStore:
@@ -75,6 +103,9 @@ class VisionEventStore:
                     summary TEXT NOT NULL,
                     detections_json TEXT NOT NULL,
                     primary_box_json TEXT,
+                    person_count INTEGER NOT NULL DEFAULT 0,
+                    person_boxes_json TEXT NOT NULL DEFAULT '[]',
+                    message_features_json TEXT NOT NULL DEFAULT '{}',
                     message_fingerprint TEXT NOT NULL,
                     image_fingerprint TEXT NOT NULL,
                     duplicate_count INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +133,9 @@ class VisionEventStore:
             "screenshot_mime_type": "ALTER TABLE vision_events ADD COLUMN screenshot_mime_type TEXT",
             "screenshot_width": "ALTER TABLE vision_events ADD COLUMN screenshot_width INTEGER NOT NULL DEFAULT 0",
             "screenshot_height": "ALTER TABLE vision_events ADD COLUMN screenshot_height INTEGER NOT NULL DEFAULT 0",
+            "person_count": "ALTER TABLE vision_events ADD COLUMN person_count INTEGER NOT NULL DEFAULT 0",
+            "person_boxes_json": "ALTER TABLE vision_events ADD COLUMN person_boxes_json TEXT NOT NULL DEFAULT '[]'",
+            "message_features_json": "ALTER TABLE vision_events ADD COLUMN message_features_json TEXT NOT NULL DEFAULT '{}'",
         }
         for column, statement in migrations.items():
             if column not in existing:
@@ -123,6 +157,53 @@ class VisionEventStore:
             deleted = len(rows)
         return deleted
 
+    def merge_duplicate_before_analysis(
+        self,
+        *,
+        session_id: str | None,
+        event_type: str,
+        detections: list[Detection],
+        image_data: str,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+        now: datetime | None = None,
+    ) -> VisionDuplicateResult | None:
+        current = now or datetime.now(UTC)
+        expires_at = current + timedelta(days=retention_days)
+        self.cleanup_expired(current)
+        screenshot = prepare_screenshot(image_data)
+        person_boxes = select_person_boxes(detections)
+        person_count = len(person_boxes)
+
+        with self.connect() as connection:
+            candidates = self._load_deduplication_candidates(
+                connection=connection,
+                event_type=event_type,
+                current=current,
+                session_id=session_id,
+            )
+            matching = find_pre_analysis_match(
+                candidates=candidates,
+                image_fingerprint=screenshot.image_fingerprint,
+                person_count=person_count,
+                person_boxes=person_boxes,
+                frame_width=screenshot.width,
+                frame_height=screenshot.height,
+            )
+            if matching is None:
+                return None
+            duplicate_count = self._update_duplicate(
+                connection=connection,
+                event_id=matching["id"],
+                current=current,
+                expires_at=expires_at,
+                duplicate_count=int(matching["duplicate_count"]) + 1,
+            )
+            return VisionDuplicateResult(
+                event_id=matching["id"],
+                duplicate_count=duplicate_count,
+                message=matching["message"],
+            )
+
     def save_or_merge_event(
         self,
         *,
@@ -142,40 +223,43 @@ class VisionEventStore:
         self.cleanup_expired(current)
         screenshot = prepare_screenshot(image_data)
         primary_box = select_primary_box(detections)
+        person_boxes = select_person_boxes(detections)
+        person_count = len(person_boxes)
+        person_boxes_json = json.dumps([box.model_dump() for box in person_boxes], ensure_ascii=False)
         detections_json = json.dumps([item.model_dump() for item in detections], ensure_ascii=False)
         primary_box_json = json.dumps(primary_box.model_dump(), ensure_ascii=False) if primary_box else None
         message_fingerprint = normalize_message(message)
+        message_features = extract_message_features(message)
+        message_features_json = json.dumps(message_features, ensure_ascii=False)
         summary = summarize_message(message)
 
         with self.connect() as connection:
-            candidates = connection.execute(
-                """
-                SELECT * FROM vision_events
-                WHERE event_type = ? AND expires_at > ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (event_type, current.isoformat(), DEDUPLICATION_CANDIDATE_LIMIT),
-            ).fetchall()
+            candidates = self._load_deduplication_candidates(
+                connection=connection,
+                event_type=event_type,
+                current=current,
+                session_id=session_id,
+            )
             matching = find_matching_event(
                 candidates=candidates,
                 event_type=event_type,
                 message=message,
                 message_fingerprint=message_fingerprint,
+                message_features=message_features,
                 image_fingerprint=screenshot.image_fingerprint,
                 primary_box=primary_box,
+                person_count=person_count,
+                person_boxes=person_boxes,
                 frame_width=screenshot.width,
                 frame_height=screenshot.height,
             )
             if matching is not None:
-                duplicate_count = int(matching["duplicate_count"]) + 1
-                connection.execute(
-                    """
-                    UPDATE vision_events
-                    SET duplicate_count = ?, last_seen_at = ?, expires_at = ?
-                    WHERE id = ?
-                    """,
-                    (duplicate_count, current.isoformat(), expires_at.isoformat(), matching["id"]),
+                duplicate_count = self._update_duplicate(
+                    connection=connection,
+                    event_id=matching["id"],
+                    current=current,
+                    expires_at=expires_at,
+                    duplicate_count=int(matching["duplicate_count"]) + 1,
                 )
                 return VisionPersistenceResult(
                     event_id=matching["id"],
@@ -189,11 +273,12 @@ class VisionEventStore:
                 """
                 INSERT INTO vision_events (
                     id, session_id, track_id, event_type, model_id, frame_id, message, summary, detections_json,
-                    primary_box_json, message_fingerprint, image_fingerprint, duplicate_count,
+                    primary_box_json, person_count, person_boxes_json, message_features_json,
+                    message_fingerprint, image_fingerprint, duplicate_count,
                     first_seen_at, last_seen_at, created_at, expires_at, screenshot_path,
                     screenshot_mime_type, screenshot_size_bytes, screenshot_width, screenshot_height
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event_id,
@@ -206,6 +291,9 @@ class VisionEventStore:
                     summary,
                     detections_json,
                     primary_box_json,
+                    person_count,
+                    person_boxes_json,
+                    message_features_json,
                     message_fingerprint,
                     screenshot.image_fingerprint,
                     0,
@@ -221,6 +309,48 @@ class VisionEventStore:
                 ),
             )
             return VisionPersistenceResult(event_id=event_id, duplicate_count=0, deduplicated=False)
+
+    def _load_deduplication_candidates(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        event_type: str,
+        current: datetime,
+        session_id: str | None,
+    ) -> list[sqlite3.Row]:
+        candidates = connection.execute(
+            """
+            SELECT * FROM vision_events
+            WHERE event_type = ? AND expires_at > ?
+            ORDER BY
+                CASE WHEN session_id = ? THEN 0 ELSE 1 END,
+                created_at DESC
+            LIMIT ?
+            """,
+            (event_type, current.isoformat(), session_id, DEDUPLICATION_CANDIDATE_LIMIT),
+        ).fetchall()
+        if session_id is None:
+            return candidates
+        return [candidate for candidate in candidates if candidate["session_id"] in {session_id, None}]
+
+    def _update_duplicate(
+        self,
+        *,
+        connection: sqlite3.Connection,
+        event_id: str,
+        current: datetime,
+        expires_at: datetime,
+        duplicate_count: int,
+    ) -> int:
+        connection.execute(
+            """
+            UPDATE vision_events
+            SET duplicate_count = ?, last_seen_at = ?, expires_at = ?
+            WHERE id = ?
+            """,
+            (duplicate_count, current.isoformat(), expires_at.isoformat(), event_id),
+        )
+        return duplicate_count
 
     def list_events(self, start_at: datetime | None, end_at: datetime | None, keyword: str | None, limit: int) -> list[dict]:
         self.cleanup_expired()
@@ -371,6 +501,13 @@ def select_primary_box(detections: list[Detection]) -> Box | None:
     return max(candidates, key=lambda item: item.confidence).box
 
 
+def select_person_boxes(detections: list[Detection]) -> list[Box]:
+    return sorted(
+        [item.box for item in detections if item.label.lower() == "person"],
+        key=lambda box: (box.x + box.width / 2, box.y + box.height / 2),
+    )
+
+
 def boxes_are_close(left: Box | None, right: Box | None, frame_width: int, frame_height: int) -> bool:
     if left is None or right is None:
         return False
@@ -394,29 +531,81 @@ def box_iou(left: Box, right: Box) -> float:
     return intersection / union if union > 0 else 0.0
 
 
+def find_pre_analysis_match(
+    *,
+    candidates: list[sqlite3.Row],
+    image_fingerprint: str,
+    person_count: int,
+    person_boxes: list[Box],
+    frame_width: int,
+    frame_height: int,
+) -> sqlite3.Row | None:
+    for candidate in candidates:
+        if risk_polarity(candidate["message"]) == "positive":
+            continue
+        if people_count_increased(person_count, int(candidate["person_count"])):
+            continue
+        if not scene_layout_similar(person_boxes, parse_boxes(candidate["person_boxes_json"]), frame_width, frame_height):
+            continue
+        if hamming_distance(image_fingerprint, candidate["image_fingerprint"]) <= IMAGE_HASH_SIMILAR_DISTANCE:
+            return candidate
+    return None
+
+
 def find_matching_event(
     *,
     candidates: list[sqlite3.Row],
     event_type: str,
     message: str,
     message_fingerprint: str,
+    message_features: dict[str, object],
     image_fingerprint: str,
     primary_box: Box | None,
+    person_count: int,
+    person_boxes: list[Box],
     frame_width: int,
     frame_height: int,
 ) -> sqlite3.Row | None:
     for candidate in candidates:
         if has_significant_text_change(message, candidate["message"]):
             continue
-        image_similar = hamming_distance(image_fingerprint, candidate["image_fingerprint"]) <= IMAGE_HASH_SIMILAR_DISTANCE
+        if people_count_increased(person_count, int(candidate["person_count"])):
+            continue
         text_similar = text_similarity(message_fingerprint, candidate["message_fingerprint"]) >= TEXT_SIMILARITY_THRESHOLD
+        feature_similar = message_features_are_similar(message_features, parse_message_features(candidate["message_features_json"]))
         candidate_box = parse_box(candidate["primary_box_json"])
         box_close = boxes_are_close(primary_box, candidate_box, frame_width, frame_height)
-        if event_type == "new_person" and image_similar and text_similar:
+        layout_similar = scene_layout_similar(person_boxes, parse_boxes(candidate["person_boxes_json"]), frame_width, frame_height)
+        semantic_duplicate = text_similar or feature_similar
+        if event_type == "new_person" and semantic_duplicate and layout_similar:
             return candidate
-        if event_type == "person_moved" and image_similar and text_similar and box_close:
+        if event_type == "person_moved" and semantic_duplicate and box_close and layout_similar:
             return candidate
     return None
+
+
+def people_count_increased(current_count: int, previous_count: int) -> bool:
+    return current_count > previous_count
+
+
+def scene_layout_similar(current_boxes: list[Box], previous_boxes: list[Box], frame_width: int, frame_height: int) -> bool:
+    if not current_boxes or not previous_boxes:
+        return not current_boxes and not previous_boxes
+    if len(current_boxes) != len(previous_boxes):
+        return False
+    frame_area = max(1.0, frame_width * frame_height)
+    return all(boxes_have_similar_layout(current, previous, frame_width, frame_height, frame_area) for current, previous in zip(current_boxes, previous_boxes))
+
+
+def boxes_have_similar_layout(current: Box, previous: Box, frame_width: int, frame_height: int, frame_area: float) -> bool:
+    if not boxes_are_close(current, previous, frame_width, frame_height):
+        return False
+    current_area = current.width * current.height / frame_area
+    previous_area = previous.width * previous.height / frame_area
+    if previous_area <= 0:
+        return False
+    area_delta = abs(current_area - previous_area) / previous_area
+    return area_delta <= PERSON_BOX_AREA_RATIO_DELTA or box_iou(current, previous) >= BOX_IOU_THRESHOLD
 
 
 def has_significant_text_change(current: str, previous: str) -> bool:
@@ -429,6 +618,48 @@ def has_significant_text_change(current: str, previous: str) -> bool:
     current_people = extract_people_count(current)
     previous_people = extract_people_count(previous)
     return current_people is not None and previous_people is not None and current_people != previous_people
+
+
+def extract_message_features(message: str) -> dict[str, object]:
+    return {
+        "person_count_text": extract_people_count(message),
+        "clothing_terms": sorted(extract_terms(message, CLOTHING_TERMS)),
+        "action_terms": sorted(extract_terms(message, ACTION_TERMS)),
+        "location_terms": sorted(extract_terms(message, LOCATION_TERMS)),
+        "risk_state": risk_polarity(message),
+    }
+
+
+def extract_terms(message: str, vocabulary: tuple[str, ...]) -> set[str]:
+    return {term for term in vocabulary if term in message}
+
+
+def message_features_are_similar(current: dict[str, object], previous: dict[str, object]) -> bool:
+    if current.get("risk_state") != previous.get("risk_state"):
+        return False
+    current_people = current.get("person_count_text")
+    previous_people = previous.get("person_count_text")
+    if isinstance(current_people, int) and isinstance(previous_people, int) and current_people != previous_people:
+        return False
+
+    clothing_score = jaccard_similarity(as_string_set(current.get("clothing_terms")), as_string_set(previous.get("clothing_terms")))
+    action_score = jaccard_similarity(as_string_set(current.get("action_terms")), as_string_set(previous.get("action_terms")))
+    location_score = jaccard_similarity(as_string_set(current.get("location_terms")), as_string_set(previous.get("location_terms")))
+    weighted_score = clothing_score * 0.45 + action_score * 0.35 + location_score * 0.2
+    return weighted_score >= TEXT_FEATURE_SIMILARITY_THRESHOLD and (clothing_score > 0 or action_score > 0)
+
+
+def as_string_set(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {item for item in value if isinstance(item, str)}
+
+
+def jaccard_similarity(current: set[str], previous: set[str]) -> float:
+    if not current and not previous:
+        return 1.0
+    union = current | previous
+    return len(current & previous) / len(union) if union else 0.0
 
 
 def risk_polarity(message: str) -> str:
@@ -457,6 +688,28 @@ def parse_box(raw_box: str | None) -> Box | None:
         return Box.model_validate(json.loads(raw_box))
     except Exception:
         return None
+
+
+def parse_boxes(raw_boxes: str | None) -> list[Box]:
+    if not raw_boxes:
+        return []
+    try:
+        parsed = json.loads(raw_boxes)
+        if not isinstance(parsed, list):
+            return []
+        return [Box.model_validate(item) for item in parsed if isinstance(item, dict)]
+    except Exception:
+        return []
+
+
+def parse_message_features(raw_features: str | None) -> dict[str, object]:
+    if not raw_features:
+        return {}
+    try:
+        parsed = json.loads(raw_features)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 
 
 def event_row_to_dict(row: sqlite3.Row) -> dict:

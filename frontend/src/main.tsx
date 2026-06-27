@@ -185,6 +185,7 @@ const copy = {
     close: "Close",
     imagePreview: "Image preview",
     imageLoadFailed: "Unable to load image",
+    duplicateMerged: "Merged duplicate record",
   },
   zh: {
     camera: "摄像头",
@@ -285,6 +286,7 @@ const copy = {
     close: "关闭",
     imagePreview: "图片预览",
     imageLoadFailed: "无法加载图片",
+    duplicateMerged: "已合并重复记录",
   },
 } satisfies Record<Language, Record<string, string>>;
 
@@ -828,10 +830,11 @@ function App() {
           throw new Error(await readApiError(response));
         }
         const data = (await response.json()) as VisionAnalyzeResponse;
+        const duplicateSummary = `${t.duplicateMerged} ${data.duplicateCount}`;
         updateVisionMessage(id, {
           status: "success",
           timestamp: data.createdAt,
-          summary: summarizeVisionMessage(data.message),
+          summary: data.deduplicated ? duplicateSummary : summarizeVisionMessage(data.message),
           message: data.message,
           modelId: data.modelId,
         });
@@ -844,7 +847,7 @@ function App() {
         });
       }
     },
-    [appendVisionMessage, captureCurrentFrameImage, t.pending, t.selectVisionModel, updateVisionMessage],
+    [appendVisionMessage, captureCurrentFrameImage, t.duplicateMerged, t.pending, t.selectVisionModel, updateVisionMessage],
   );
 
   React.useEffect(() => {

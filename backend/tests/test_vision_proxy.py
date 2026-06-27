@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 import io
+import sqlite3
 
 import httpx
 from fastapi.testclient import TestClient
@@ -33,6 +34,7 @@ class FakeAsyncClient:
         {"choices": [{"message": {"content": "画面中有一名人员正在移动。"}}]},
     )
     last_post_json: dict | None = None
+    post_count = 0
 
     def __init__(self, timeout: float) -> None:
         self.timeout = timeout
@@ -50,6 +52,7 @@ class FakeAsyncClient:
     async def post(self, url: str, json: dict) -> FakeResponse:
         assert url == "http://127.0.0.1:1234/v1/chat/completions"
         FakeAsyncClient.last_post_json = json
+        FakeAsyncClient.post_count += 1
         return self.chat_response
 
 
@@ -109,6 +112,7 @@ def test_app_settings_persist_to_database(monkeypatch, tmp_path) -> None:
 
 
 def test_vision_analyze_returns_chat_message(monkeypatch) -> None:
+    FakeAsyncClient.last_post_json = None
     monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
     client = TestClient(main.app)
 
@@ -187,6 +191,7 @@ def test_vision_analyze_requires_message_content(monkeypatch) -> None:
 
 
 def test_vision_analyze_deduplicates_recent_same_event_type(monkeypatch, tmp_path) -> None:
+    FakeAsyncClient.post_count = 0
     monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
     client = TestClient(main.app)
@@ -236,12 +241,196 @@ def test_vision_analyze_deduplicates_recent_same_event_type(monkeypatch, tmp_pat
     assert first.json()["eventId"] == second.json()["eventId"]
     assert second.json()["deduplicated"] is True
     assert second.json()["duplicateCount"] == 1
+    assert FakeAsyncClient.post_count == 1
 
     events_response = client.get("/vision/events")
     assert events_response.status_code == 200
     events = events_response.json()["events"]
     assert len(events) == 1
     assert events[0]["duplicateCount"] == 1
+
+
+def test_vision_analyze_does_not_deduplicate_when_person_count_increases(monkeypatch, tmp_path) -> None:
+    FakeAsyncClient.post_count = 0
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+    image_data = make_image_data()
+
+    first = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": image_data,
+            "eventType": "new_person",
+            "frameId": 1,
+            "sessionId": "session-a",
+            "detections": [
+                {"label": "person", "confidence": 0.9, "box": {"x": 10, "y": 20, "width": 30, "height": 40}},
+            ],
+        },
+    )
+    second = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": image_data,
+            "eventType": "new_person",
+            "frameId": 2,
+            "sessionId": "session-a",
+            "detections": [
+                {"label": "person", "confidence": 0.9, "box": {"x": 10, "y": 20, "width": 30, "height": 40}},
+                {"label": "person", "confidence": 0.88, "box": {"x": 60, "y": 20, "width": 28, "height": 38}},
+            ],
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["eventId"] != second.json()["eventId"]
+    assert second.json()["deduplicated"] is False
+    assert FakeAsyncClient.post_count == 2
+
+    events_response = client.get("/vision/events")
+    assert len(events_response.json()["events"]) == 2
+
+
+def test_vision_analyze_final_text_check_merges_same_clothing_and_action(monkeypatch, tmp_path) -> None:
+    class SimilarTextClient(FakeAsyncClient):
+        messages = ["门口有一名穿黑色上衣的人员站立，没有风险。", "门口有一名穿黑色上衣的人员停留，没有风险。"]
+        post_count = 0
+
+        async def post(self, url: str, json: dict) -> FakeResponse:
+            self.__class__.post_count += 1
+            return FakeResponse(200, {"choices": [{"message": {"content": self.messages.pop(0)}}]})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", SimilarTextClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+
+    first = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data("split"),
+            "eventType": "new_person",
+            "frameId": 1,
+            "sessionId": "session-a",
+            "detections": [
+                {"label": "person", "confidence": 0.9, "box": {"x": 10, "y": 20, "width": 30, "height": 40}},
+            ],
+        },
+    )
+    second = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data("inverse-split"),
+            "eventType": "new_person",
+            "frameId": 2,
+            "sessionId": "session-a",
+            "detections": [
+                {"label": "person", "confidence": 0.9, "box": {"x": 12, "y": 21, "width": 30, "height": 40}},
+            ],
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["eventId"] == second.json()["eventId"]
+    assert second.json()["deduplicated"] is True
+    assert SimilarTextClient.post_count == 2
+    assert len(client.get("/vision/events").json()["events"]) == 1
+
+
+def test_vision_analyze_final_text_check_keeps_risk_change(monkeypatch, tmp_path) -> None:
+    class RiskChangeClient(FakeAsyncClient):
+        messages = ["门口有一名穿黑色上衣的人员站立，没有风险。", "门口有一名穿黑色上衣的人员摔倒，有风险。"]
+
+        async def post(self, url: str, json: dict) -> FakeResponse:
+            return FakeResponse(200, {"choices": [{"message": {"content": self.messages.pop(0)}}]})
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", RiskChangeClient)
+    monkeypatch.setattr(main, "event_store", VisionEventStore(tmp_path))
+    client = TestClient(main.app)
+
+    first = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data("split"),
+            "eventType": "new_person",
+            "frameId": 1,
+            "sessionId": "session-a",
+            "detections": [
+                {"label": "person", "confidence": 0.9, "box": {"x": 10, "y": 20, "width": 30, "height": 40}},
+            ],
+        },
+    )
+    second = client.post(
+        "/vision/analyze",
+        json={
+            "baseUrl": "http://127.0.0.1:1234/v1",
+            "modelId": "qwen/qwen3-v1-4b",
+            "imageData": make_image_data("inverse-split"),
+            "eventType": "new_person",
+            "frameId": 2,
+            "sessionId": "session-a",
+            "detections": [
+                {"label": "person", "confidence": 0.9, "box": {"x": 12, "y": 21, "width": 30, "height": 40}},
+            ],
+        },
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["eventId"] != second.json()["eventId"]
+    assert second.json()["deduplicated"] is False
+    assert len(client.get("/vision/events").json()["events"]) == 2
+
+
+def test_vision_event_store_migrates_deduplication_columns(tmp_path) -> None:
+    db_path = tmp_path / "seeya.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE vision_events (
+                id TEXT PRIMARY KEY,
+                session_id TEXT,
+                track_id INTEGER,
+                event_type TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                frame_id INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                detections_json TEXT NOT NULL,
+                primary_box_json TEXT,
+                message_fingerprint TEXT NOT NULL,
+                image_fingerprint TEXT NOT NULL,
+                duplicate_count INTEGER NOT NULL DEFAULT 0,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                screenshot_path TEXT,
+                screenshot_mime_type TEXT,
+                screenshot_size_bytes INTEGER NOT NULL DEFAULT 0,
+                screenshot_width INTEGER NOT NULL DEFAULT 0,
+                screenshot_height INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+    store = VisionEventStore(tmp_path)
+    with store.connect() as connection:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(vision_events)").fetchall()}
+
+    assert {"person_count", "person_boxes_json", "message_features_json"} <= columns
 
 
 def test_vision_event_screenshot_returns_saved_file(monkeypatch, tmp_path) -> None:
@@ -348,8 +537,14 @@ def test_vision_events_filters_by_keyword(monkeypatch, tmp_path) -> None:
     assert "门口" in events[0]["message"]
 
 
-def make_image_data() -> str:
+def make_image_data(variant: str = "solid") -> str:
     image = Image.new("RGB", (96, 64), color=(32, 64, 96))
+    if variant == "split":
+        image.paste((240, 240, 240), (0, 0, 48, 64))
+        image.paste((16, 16, 16), (48, 0, 96, 64))
+    if variant == "inverse-split":
+        image.paste((16, 16, 16), (0, 0, 48, 64))
+        image.paste((240, 240, 240), (48, 0, 96, 64))
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG")
     payload = base64.b64encode(buffer.getvalue()).decode("ascii")

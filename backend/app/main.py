@@ -112,6 +112,28 @@ async def vision_models(payload: VisionModelsRequest) -> VisionModelsResponse:
 @app.post("/vision/analyze", response_model=VisionAnalyzeResponse)
 async def vision_analyze(payload: VisionAnalyzeRequest) -> VisionAnalyzeResponse:
     base_url = normalize_lm_studio_base_url(payload.baseUrl)
+    created_at = datetime.now(UTC)
+    try:
+        duplicate = event_store.merge_duplicate_before_analysis(
+            session_id=payload.sessionId,
+            event_type=payload.eventType,
+            detections=payload.detections,
+            image_data=payload.imageData,
+            retention_days=payload.retentionDays,
+            now=created_at,
+        )
+    except Exception:
+        duplicate = None
+    if duplicate is not None:
+        return VisionAnalyzeResponse(
+            message=duplicate.message,
+            createdAt=created_at.isoformat(),
+            modelId=payload.modelId,
+            eventId=duplicate.event_id,
+            duplicateCount=duplicate.duplicate_count,
+            deduplicated=True,
+        )
+
     request_body = {
         "model": payload.modelId,
         "temperature": 0.2,
@@ -150,7 +172,6 @@ async def vision_analyze(payload: VisionAnalyzeRequest) -> VisionAnalyzeResponse
     if not message:
         raise HTTPException(status_code=502, detail="LM Studio response did not include message content")
 
-    created_at = datetime.now(UTC)
     event_id: str | None = None
     duplicate_count = 0
     deduplicated = False
